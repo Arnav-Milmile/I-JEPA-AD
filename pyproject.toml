@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Decoder-free latent anomaly detection with I-JEPA."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["numpy>=1.26,<3"]
 
 [project.optional-dependencies]
 dev = [
@@ -37,6 +37,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+follow_imports = "skip"
 files = ["src", "tests"]
 packages = ["ijepa_ad"]
 

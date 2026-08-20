@@ -1,7 +1,7 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-08-20 — scaffold only._
+_Last reviewed against src/: 2026-08-20 — foundational utilities added._
 
 ## 1. High-Level Design
 The current scaffold contains package boundaries only; no runtime data flow or
@@ -19,15 +19,35 @@ configs/ ──> future scripts/ ──> src/ijepa_ad/
                               └── utils
 ```
 
-Each `src/ijepa_ad/` subpackage currently contains only an empty initializer.
+The `utils` package now provides cross-cutting controls used by every future
+training and evaluation entrypoint: `set_seed()` establishes reproducible random
+state, `setup_logging()` emits structured JSONL records, and `profile_peak_vram()`
+records peak CUDA allocation around a code block.
 
 ## 2. Low-Level Design
-No classes, functions, or data schemas have been implemented. Configuration files
-are placeholders for the Hydra/OmegaConf work planned in the next phase.
+Foundational utility interfaces:
+
+- [`seeding.py`](src/ijepa_ad/utils/seeding.py): `set_seed(seed: int) -> None`
+  seeds Python, NumPy, PyTorch, and CUDA and enables deterministic PyTorch
+  algorithms.
+- [`logging_setup.py`](src/ijepa_ad/utils/logging_setup.py):
+  `setup_logging(level, log_file, logger_name) -> logging.Logger` configures
+  idempotent stream/file JSON logging.
+- [`profiling.py`](src/ijepa_ad/utils/profiling.py):
+  `profile_peak_vram(label, logger, device) -> Iterator[PeakMemory]` resets and
+  reads `torch.cuda.max_memory_allocated()` on CUDA hosts and safely reports zero
+  on CPU-only hosts.
+
+All remaining package modules are still empty. Configuration files are placeholders
+for the Hydra/OmegaConf work planned in the next phase.
 
 ## 3. Runtime Flow
-Training and inference flows are not implemented yet.
+Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime
+blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output is
+sent through the logger returned by `setup_logging()`.
 
 ## 4. Divergences from the original PRD
 The initial scaffold uses `requirements-lock.txt` as the permitted lockfile variant
-from §1 and keeps runtime dependencies empty. See `DECISIONS.md`, 2026-08-20.
+from §1 and keeps modeling dependencies empty. Foundational utilities use lazy
+PyTorch loading so CPU-only tooling remains importable. See `DECISIONS.md`,
+2026-08-20.
