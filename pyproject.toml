@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Decoder-free latent anomaly detection with I-JEPA."
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26,<3"]
+dependencies = ["numpy>=1.26,<3", "torch>=2.2,<3"]
 
 [project.optional-dependencies]
 dev = [
@@ -38,6 +38,8 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.11"
 strict = true
 follow_imports = "skip"
+ignore_missing_imports = true
+disallow_subclassing_any = false
 files = ["src", "tests"]
 packages = ["ijepa_ad"]
 

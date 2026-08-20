@@ -108,7 +108,7 @@ The PRD's 16-week roadmap is sound at the milestone level; the additions below a
 - Deliverable: CI green on an empty-but-structured repo; dataset unit tests passing.
 
 **Weeks 3–4 — Encoder & Caching**
-- `ijepa_wrapper.py`: load frozen checkpoint, assert `requires_grad=False` for all parameters (test this explicitly — it's a correctness requirement in PRD §4.1, not just a performance one).
+- `ijepa_wrapper.py`: load Meta's official frozen ViT-g/16 ImageNet-22K checkpoint, assert `requires_grad=False` for all parameters (test this explicitly — it's a correctness requirement in PRD §4.1, not just a performance one).
 - `latent_cache.py` with an explicit `cache_schema.py` (embedding dim, patch grid size, checkpoint hash, image preprocessing hash — see §6 for why the hash matters).
 - Unit tests: cache round-trip (write → read → tensor-equal), schema-version mismatch raises a clear error rather than silently loading stale/incompatible latents.
 - Deliverable: latent cache built for `bottle`, `capsule`, `hazelnut`; VRAM logged and confirmed under budget for this stage.
@@ -194,7 +194,7 @@ Pin known-good numeric outputs (AUROC within ±X%, latency within ±Y%) on the 3
 ## 6. Reproducibility & Experiment Tracking
 
 - **Run manifests:** every training/eval run writes a JSON manifest: git commit SHA, config (fully resolved, not just overrides), package versions (`pip freeze` or lockfile hash), seed, hardware, timestamp, and a hash of the exact cached-latent files used.
-- **Cache versioning:** `cache_schema.py` embeds the I-JEPA checkpoint hash and preprocessing version into the cache file itself. If you ever swap ViT-B/16 for ViT-L/16, stale caches fail loudly instead of silently mixing embeddings from two different encoders.
+- **Cache versioning:** `cache_schema.py` embeds the I-JEPA ViT-g/16 checkpoint hash and preprocessing version into the cache file itself. If the backbone or latent dimension changes, stale caches fail loudly instead of silently mixing incompatible embeddings.
 - **Experiment tracking:** Weights & Biases (free tier) or a local MLflow instance — either is fine; the requirement is that every number in the paper traces back to a specific logged run ID, not a number copy-pasted from a terminal that no longer exists.
 - **Results storage:** `results/` is git-ignored but content-hashed or DVC-tracked, so `generate_paper_assets.py` can be re-run at submission time to regenerate the exact tables/figures without manual editing — this also protects you if a reviewer asks for a number you didn't originally tabulate.
 

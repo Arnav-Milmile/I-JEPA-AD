@@ -57,3 +57,24 @@ between official directories.
 nominal/defect test counts, mask pairing, non-nominal directory rejection, and
 cross-split duplicate-content rejection. Future validation split implementation is
 pending the predictor phase.
+
+## [2026-08-20] Adopt Meta official I-JEPA ViT-g/16 checkpoint
+**Context:** The PRD requested an official ViT-B/16 checkpoint, but Meta's official
+I-JEPA release provides no pretrained ViT-B/16 weights. The user authorized the
+official ViT-g/16 alternative.
+**Options considered:** Train or source a non-official ViT-B/16 checkpoint; use
+Meta's official ViT-g/16 checkpoint; or stop until an official ViT-B/16 release
+exists.
+**Decision:** Use Meta's official ImageNet-22K ViT-g/16 44-epoch checkpoint at
+`https://dl.fbaipublicfiles.com/ijepa/IN22K-vit.g.16-600e.pth.tar`, with the
+official `in22k_vitg16_ep44.yaml` architecture settings: 224px input, 16px patch,
+196 tokens, and embedding dimension 1408.
+**Rationale:** This is the only available official Meta checkpoint that matches the
+project's 224px/16px/196-token geometry. The tradeoff is substantially higher VRAM
+usage and a changed latent dimension; the first run must profile memory on the
+RTX 4060 before pipeline commitment.
+**Baseline / prior state:** Encoder implementation was blocked on a nonexistent
+official ViT-B/16 checkpoint.
+**Outcome after change:** The project configuration and wrapper contract now target
+ViT-g/16; production construction remains pending a local checkout of Meta's
+archived source repository and a memory smoke test.

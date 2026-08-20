@@ -24,6 +24,12 @@ training and evaluation entrypoint: `set_seed()` establishes reproducible random
 state, `setup_logging()` emits structured JSONL records, and `profile_peak_vram()`
 records peak CUDA allocation around a code block.
 
+The `encoder` package wraps Meta's official I-JEPA ViT-g/16 ImageNet-22K
+44-epoch checkpoint. It is configured for 224×224 RGB inputs, 16×16 patches,
+196 patch tokens, and 1408-dimensional latents. The wrapper requires Meta's
+official source checkout to construct the architecture and loads the checkpoint's
+`target_encoder` state dict.
+
 The `data` package owns MVTec AD ingestion and split invariants. It discovers only
 `<root>/<category>/train/good/*` for training and all label directories under
 `<root>/<category>/test/*` for testing. Training records must be nominal and
@@ -62,6 +68,15 @@ Data interfaces:
   `validate_no_split_leakage()` enforce nominal-only training, official mask/label
   pairing, and no cross-split image IDs.
 
+Encoder interface:
+
+- [`ijepa_wrapper.py`](src/ijepa_ad/encoder/ijepa_wrapper.py):
+  `IJEPAEncoder(checkpoint_path, official_repo_path, device)` loads the official
+  ViT-g/16 target encoder, switches it to `eval()`, freezes every parameter, and
+  exposes `encode(image_batch) -> Tensor[N, 196, 1408]`. Loading fails if the
+  checkpoint is missing, lacks `target_encoder`, or does not exactly match the
+  architecture.
+
 ## 3. Runtime Flow
 Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime
 blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output is
@@ -69,6 +84,11 @@ sent through the logger returned by `setup_logging()`.
 
 The future predictor validation split must be carved from nominal training records
 only; test defects remain evaluation-only and never participate in model selection.
+
+For training-time caching, nominal images flow through `IJEPAEncoder.encode()` once
+and produce `[N, 196, 1408]` latent tensors. The first ViT-g/16 run must use batch
+size 1, inference mode, and `profile_peak_vram()` to establish whether the RTX 4060
+8 GB target is viable.
 
 ## 4. Divergences from the original PRD
 The initial scaffold uses `requirements-lock.txt` as the permitted lockfile variant

@@ -81,10 +81,10 @@ To eliminate the inference bottleneck of dense overlapping sliding masks, I-JEPA
 
 
 ### 4.1. Frozen I-JEPA Encoder
-* **Model Checkpoint:** Official Meta AI I-JEPA ViT-B/16 or ViT-L/16 (ImageNet-1K pre-trained).
+* **Model Checkpoint:** Official Meta I-JEPA ViT-g/16 (ImageNet-22K, 44-epoch checkpoint).
 * **Execution State:** Strictly frozen (`eval()` mode, `requires_grad = False`).
 * **Input Resolution:** $224 \times 224 \times 3$.
-* **Output:** Patch latent representations $Z \in \mathbb{R}^{N \times D}$, where $N = (224/16)^2 = 196$ tokens, and $D$ is the embedding dimension.
+* **Output:** Patch latent representations $Z \in \mathbb{R}^{N \times D}$, where $N = (224/16)^2 = 196$ tokens and $D=1408$ for ViT-g/16.
 
 ### 4.2. Offline Latent Caching Subsystem
 * **Purpose:** Eliminate repetitive encoder forward passes during training on nominal datasets.

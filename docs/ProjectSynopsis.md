@@ -55,7 +55,7 @@ The primary research objective is to answer:
 
 ### System Architecture
 The proposed **I-JEPA-AD** framework decouples image encoding from predictive evaluation:
-1. **Pre-computation & Offline Caching:** Nominal training images from MVTec AD are processed through the frozen I-JEPA Context and Target Encoders (e.g., pre-trained ViT-Base/Large backbones). The resulting spatial patch embeddings are cached to disk to allow lightweight predictor training without repeated encoder forward passes.
+1. **Pre-computation & Offline Caching:** Nominal training images from MVTec AD are processed through the frozen Meta I-JEPA ViT-g/16 Context and Target Encoders. The resulting 1408-dimensional spatial patch embeddings are cached to disk to allow lightweight predictor training without repeated encoder forward passes.
 2. **Predictor Optimization:** A lightweight Transformer Predictor (2–4 layers, 4–8 heads) is trained on cached nominal embeddings. Given context representations and target positional mask tokens, it learns to predict the expected nominal target representation using an $L_2$ or Cosine loss:
    $$L_{\text{pred}} = 1 - \cos(z^{\text{pred}}, z^{\text{target}})$$
 3. **Stage 1 (Coarse Inference):** The test image is passed through the frozen I-JEPA encoder. A grid of non-overlapping coarse masks is applied. The predictor forecasts the coarse latent representation $\hat{z}^{\text{coarse}}$, and the coarse anomaly score is calculated:
@@ -107,7 +107,7 @@ The proposed **I-JEPA-AD** framework decouples image encoding from predictive ev
 ## 6. Technology, Tools, and Platforms
 * **Programming Language:** Python 3.10+
 * **Deep Learning Framework:** PyTorch 2.2+, PyTorch Lightning, Automatic Mixed Precision (AMP / FP16)
-* **Foundation Backbone:** Meta Open-Source I-JEPA (ViT-B/16 or ViT-L/16 pre-trained checkpoints, frozen)
+* **Foundation Backbone:** Meta Open-Source I-JEPA ViT-g/16 ImageNet-22K checkpoint, frozen
 * **Evaluation Framework:** Intel Anomalib integration (for AUROC, PRO, and benchmarking metrics)
 * **Primary Dataset:** MVTec Anomaly Detection (MVTec AD) benchmark (15 industrial categories)
   * *Pilot Phase:* `bottle`, `capsule`, `hazelnut`
