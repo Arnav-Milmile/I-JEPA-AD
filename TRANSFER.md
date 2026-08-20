@@ -1,12 +1,14 @@
 # TRANSFER.md
-_Last updated: <not yet run>, by <n/a>, at commit <n/a>_
+_Last updated: 2026-08-20 21:41 IST, by Codex, at commit 1afa2f066046c966b1ca9882810f43bf76a3804b (working tree changes not committed)_
 
 ## 1. One-paragraph project state
-Project scaffolding only — no modeling code written yet. Follow IMPLEMENTATION_PLAN.md
-Phase 0 (P0.1–P0.3 in the prompt library) as the first real work.
+The repository now has the §1 directory skeleton, an importable empty `ijepa_ad`
+package, placeholder experiment configuration files, development-tool configuration,
+pre-commit hooks, and push/PR GitHub Actions CI. No modeling, dataset, or runtime
+pipeline code has been written.
 
 ## 2. Phase checklist
-- Phase 0 (Scaffolding): NOT STARTED
+- Phase 0 (Scaffolding): DONE — package layout, tooling, CI, and smoke test added.
 - Phase 1 (Encoder & Caching): NOT STARTED
 - Phase 2 (Predictor): NOT STARTED
 - Phase 3 (Baselines): NOT STARTED
@@ -16,21 +18,35 @@ Phase 0 (P0.1–P0.3 in the prompt library) as the first real work.
 - Phase 7 (Paper Assets & Documentation): NOT STARTED
 
 ## 3. What is verified working right now
-_Nothing yet — no code has been written or tested._
+- The scaffold smoke test imports `ijepa_ad`: `tests/unit/test_scaffold.py`.
+- Local equivalents of every CI quality check pass: Ruff, Black (single-worker),
+  mypy, and pytest (1 test passed).
+- The configured push/PR workflow is defined in `.github/workflows/ci.yaml`.
 
 ## 4. What is NOT done yet (explicit, so it isn't assumed)
-Everything. Start with prompt P0.1 in the prompt library.
+- All modeling, data loading, caching, evaluation, and experiment scripts.
+- Hydra/OmegaConf configuration composition and concrete experiment configs.
+- Unit, integration, and regression tests beyond the scaffold smoke test.
+- A GitHub-hosted CI run has not yet occurred.
 
 ## 5. Environment & reproduction
-_Not yet established — will be filled in once P0.1 sets up pyproject.toml / lockfile._
+- From the repository root: `python -m pip install -e ".[dev]"`.
+- Or install exact development tools with `python -m pip install -r requirements-lock.txt`.
+- Run checks with `ruff check .`, `black --check .`, `mypy src tests`, and
+  `pytest tests/unit tests/integration`.
+- No model checkpoints, datasets, caches, or GPU/CUDA state are present.
 
 ## 6. Known issues / open threads
-_None yet._
+- The base environment initially lacked the development tools; they were installed
+  successfully for local verification.
+- CI dependency installation relies on the package index available to GitHub Actions.
 
 ## 7. Where to look for more detail
-- Requirements: PRD.md, ProjectSynopsis.md
-- Engineering plan: IMPLEMENTATION_PLAN.md
-- Agent conventions: CLAUDE.md
+- Requirements and phase plan: `docs/IMPLEMENTATION_PLAN.md`.
+- Architecture state: `FLOW.md`.
+- Design choices: `DECISIONS.md`.
+- Agent conventions: `AGENT.md`.
 
 ## 8. Immediate next step
-Run prompt P0.1 — Repo skeleton (see Part 2 of the prompt library).
+Install the development extras and run the CI command set locally, then begin the
+data-foundation phase with the required tests.

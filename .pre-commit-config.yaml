@@ -1,0 +1,27 @@
+default_language_version:
+  python: python3.11
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+  - repo: https://github.com/psf/black-pre-commit
+    rev: 25.1.0
+    hooks:
+      - id: black
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        pass_filenames: false
+        args: [src, tests]
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest tests/unit tests/integration
+        language: system
+        pass_filenames: false
