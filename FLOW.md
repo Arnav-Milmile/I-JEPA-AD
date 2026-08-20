@@ -24,6 +24,16 @@ training and evaluation entrypoint: `set_seed()` establishes reproducible random
 state, `setup_logging()` emits structured JSONL records, and `profile_peak_vram()`
 records peak CUDA allocation around a code block.
 
+The `data` package owns MVTec AD ingestion and split invariants. It discovers only
+`<root>/<category>/train/good/*` for training and all label directories under
+`<root>/<category>/test/*` for testing. Training records must be nominal and
+unmasked. Test `good` records are nominal and unmasked; every defect record must
+have the corresponding official mask at
+`<root>/<category>/ground_truth/<defect>/<image_stem>_mask.*`. Image identity is a
+SHA-256 digest of file content, which catches copied images even when MVTec
+filenames repeat across its official train and test directories. The split validator
+rejects duplicate IDs within a split and any ID shared across train and test.
+
 ## 2. Low-Level Design
 Foundational utility interfaces:
 
@@ -41,10 +51,24 @@ Foundational utility interfaces:
 All remaining package modules are still empty. Configuration files are placeholders
 for the Hydra/OmegaConf work planned in the next phase.
 
+Data interfaces:
+
+- [`mvtec_dataset.py`](src/ijepa_ad/data/mvtec_dataset.py):
+  `MVTecADDataset(root, category, split)` discovers immutable `MVTecSample` records
+  and validates the selected official split. `validate_category_splits(root,
+  category)` validates both boundaries together.
+- [`validators.py`](src/ijepa_ad/data/validators.py):
+  `validate_training_records()`, `validate_test_records()`, and
+  `validate_no_split_leakage()` enforce nominal-only training, official mask/label
+  pairing, and no cross-split image IDs.
+
 ## 3. Runtime Flow
 Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime
 blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output is
 sent through the logger returned by `setup_logging()`.
+
+The future predictor validation split must be carved from nominal training records
+only; test defects remain evaluation-only and never participate in model selection.
 
 ## 4. Divergences from the original PRD
 The initial scaffold uses `requirements-lock.txt` as the permitted lockfile variant

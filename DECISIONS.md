@@ -38,3 +38,22 @@ PyTorch loading keeps CPU-only configuration and test environments importable.
 **Outcome after change:** All three utilities have unit tests; CPU test environments
 report zero CUDA memory safely, while CUDA environments use PyTorch's peak allocator
 counter. Further integration with training and inference is pending Phase 1+.
+
+## [2026-08-20] Keep official MVTec test data evaluation-only
+**Context:** MVTec AD ingestion needs strict train/test boundaries and a future
+nominal validation strategy without leaking defect labels into model selection.
+**Options considered:** Randomly split all images including test defects; use the
+official test split for validation; or hold out validation samples from nominal
+training images and reserve the official test split for final evaluation.
+**Decision:** Discover training only from `train/good`, discover mixed labels from
+the official `test` tree, require each defect image's matching
+`ground_truth/<label>/<stem>_mask.*`, and reserve future validation as a nominal-only
+holdout from training. Detect cross-split leakage using SHA-256 content IDs.
+**Rationale:** This follows the MVTec AD protocol, keeps defect labels out of
+hyperparameter selection, and catches copied images even when filenames are reused
+between official directories.
+**Baseline / prior state:** No data discovery or split validation existed.
+**Outcome after change:** Synthetic fixtures verify nominal-only training, 2:2
+nominal/defect test counts, mask pairing, non-nominal directory rejection, and
+cross-split duplicate-content rejection. Future validation split implementation is
+pending the predictor phase.
