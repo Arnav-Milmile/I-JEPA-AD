@@ -29,7 +29,7 @@ class MVTecSample(SampleMetadata):
 
 class MVTecADDataset(Sequence[MVTecSample]):
     """Indexable metadata dataset for one MVTec AD category and split.
-
+    
     The class deliberately returns validated path metadata rather than loading
     images. Image decoding/transforms belong at the model boundary and can be
     added later without weakening split validation.

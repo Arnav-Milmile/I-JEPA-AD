@@ -29,3 +29,7 @@ python scripts/spikes/check_encoder_vram.py
 The script is intentionally a throwaway diagnostic and is not part of the tested
 package or CI. It measures forward-pass `torch.cuda.max_memory_allocated()` at batch
 sizes 1, 4, 8, and 16 using FP16, `torch.no_grad()`, and CUDA autocast.
+
+For the complete RTX 4090 setup, installation, checkpoint verification, non-skipped
+unit-test check, VRAM table, and real-wrapper smoke test, follow
+[`docs/ENCODER_VITG16_CUDA_RUNBOOK.md`](docs/ENCODER_VITG16_CUDA_RUNBOOK.md).
