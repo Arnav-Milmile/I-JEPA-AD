@@ -1,7 +1,7 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 3 resumable cache generation and lookup added._
+_Last reviewed against src/: 2026-10-10 — Phase 4 cache-generation CLI and run summary added._
 
 ## 1. High-Level Design
 The data path is implemented through latent caching (generation, resume, lookup),
@@ -24,6 +24,8 @@ data.transforms.preprocess_batch ──> Tensor[N, 3, 224, 224]  (I-JEPA normali
 encoder.ijepa_wrapper.IJEPAEncoder.encode ──> Tensor[N, 196, 1408]  (frozen)
         │
         ▼
+caching.cli (CLI → CacheRunConfig → run_cache_generation → RunSummary)
+        │   for each category/purpose calls ↓
 caching.builder.build_latent_cache  (batches; per-sample shards
         │   <split>.parts/<id>.pt; resumable; assembles only when complete)
         ▼                                 ──> <root>/<category>/<split>.pt
@@ -121,15 +123,29 @@ Encoder interface:
 
 Caching interfaces (`src/ijepa_ad/caching/`):
 
+- [`cli.py`](src/ijepa_ad/caching/cli.py): `python -m ijepa_ad.caching.cli
+  --category NAME [NAME ...] [--purpose nominal|test] [--dataset-root] [--cache-root]
+  [--batch-size] [--device] [--val-fraction] [--seed] [--rebuild] [--mock-encoder]
+  [--checkpoint] [--official-repo] [--encoder-name] [--summary-json]`;
+  `CacheRunConfig`, `run_cache_generation(config, encoder=None) -> RunSummary`,
+  `main(argv) -> int` (0 all complete, 1 some entries/samples failed, 2 bad
+  configuration). `RunSummary.to_dict()` holds totals (`samples_discovered`,
+  `skipped_compatible`, `encoded_new`, `recomputed`, `failed`), per-entry results,
+  `failed_samples`, cache root, device, encoder name/hash, and `encoder_kind`
+  (`mock`/`real`) with `real_checkpoint_inference`. Mock runs write to
+  `<cache-root>/_mock`. `scripts/build_latent_cache.py` is a thin wrapper.
+
 - [`builder.py`](src/ijepa_ad/caching/builder.py): `build_latent_cache(samples,
   encoder, *, cache_root, category, split, encoder_name, checkpoint_sha256,
-  patch_size, embedding_dim, config=None, batch_size=8) -> BuildReport`;
+  patch_size, embedding_dim, num_tokens=None, config=None, batch_size=8) ->
+  BuildReport` (`encoded`, `reused`, `recomputed`, `failed`, `already_complete`);
   `build_nominal_latent_caches(train_samples, encoder, *, val_fraction, seed,
   ...)` (split, then cache `train` and `val`); `parts_dir(...)`. `encoder` is
   anything with `encode(Tensor[N,3,S,S]) -> Tensor[N,tokens,dim]` (`IJEPAEncoder`
-  or a mock). Error: `CacheBuildError` (has `.failed`).
+  or a mock). Error: `CacheBuildError` (has `.failed` and the partial `.report`);
+  encoder output with the wrong row count, token count, or dim raises it before saving.
 
-- [`cache_schema.py`](src/ijepa_ad/caching/cache_schema.py): `SCHEMA_VERSION = 1`;
+- [`cache_schema.py`](src/ijepa_ad/caching/cache_schema.py): `SCHEMA_VERSION = 2`;
   frozen `CacheMetadata` (`to_json()`, `from_json()`, `from_dict()`),
   `PreprocessingSpec.from_config(PreprocessConfig)`, and `CacheExpectations`
   (`mismatches(metadata)`). Errors: `CacheMetadataError`,
@@ -195,6 +211,13 @@ preprocesses each sample, encodes, and writes one shard per sample; a rerun skip
 compatible shards; the final `<split>.pt` is written only when every sample has a
 shard. An unreadable image raises `CacheBuildError` (good shards kept, no final
 entry). Only mock encoders have been run; no real-encoder cache exists.
+
+The CLI performs the same flow per category: `validate_category_splits`, then for
+`--purpose nominal` `split_nominal_train_val` and caches `train` and `val`; for
+`--purpose test` only the official test records, as a separate `test` entry. Samples
+that cannot be read, and entries that are unusable (e.g. a corrupted final file), are
+recorded in the summary and the run moves on. An exception from the encoder aborts the
+run (finished shards are kept; rerun to resume). Only the mock encoder has been run.
 
 Test defects remain evaluation-only and never participate in model selection.
 

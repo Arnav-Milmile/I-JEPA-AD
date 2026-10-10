@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
@@ -56,12 +56,19 @@ class LatentEncoder(Protocol):
 class CacheBuildError(CacheError):
     """Generation could not complete; finished shards are kept for resuming.
 
-    ``failed`` maps sample id to the reason that sample could not be encoded.
+    ``failed`` maps sample id to the reason that sample could not be encoded;
+    ``report`` (when the build got far enough to count) says what was done anyway.
     """
 
-    def __init__(self, message: str, failed: dict[str, str] | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        failed: dict[str, str] | None = None,
+        report: BuildReport | None = None,
+    ) -> None:
         super().__init__(message)
         self.failed = failed or {}
+        self.report = report
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,8 @@ class BuildReport:
     encoded: int  # samples the encoder ran on in this call
     reused: int  # samples served from existing shards or the final entry
     already_complete: bool  # a compatible final entry existed; nothing was done
+    recomputed: int = 0  # of ``encoded``: shards that existed but were unusable
+    failed: dict[str, str] = field(default_factory=dict)  # sample id -> reason
 
 
 def parts_dir(cache_root: str | Path, category: str, split: str) -> Path:
@@ -92,6 +101,7 @@ def build_latent_cache(
     checkpoint_sha256: str,
     patch_size: int,
     embedding_dim: int,
+    num_tokens: int | None = None,
     config: PreprocessConfig | None = None,
     batch_size: int = 8,
 ) -> BuildReport:
@@ -99,8 +109,15 @@ def build_latent_cache(
 
     ``samples`` define the entry's rows and order. ``split`` ``train``/``val`` accept
     only official nominal training records; ``test`` only official test records.
-    Raises ``CacheBuildError`` if any sample cannot be preprocessed (the rest are
-    kept as shards, and no final entry is written).
+    ``num_tokens`` (e.g. 196 for the real encoder), when given, is checked together
+    with ``embedding_dim`` on every encoder output before anything is saved.
+
+    Failure handling: a sample that cannot be preprocessed is recorded and raises
+    ``CacheBuildError`` after the others are processed (their shards are kept and no
+    final entry is written). An encoder output of the wrong shape raises
+    ``CacheBuildError`` at once; an exception raised by the encoder itself propagates
+    unchanged. Neither is retried per sample: such failures are systematic (OOM, wrong
+    model), so resuming the run is the recovery path.
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
@@ -133,8 +150,11 @@ def build_latent_cache(
     missing = [
         record
         for record in records
-        if _load_shard(shard_root, record.image_id, expectations) is None
+        if not _shard_is_valid(shard_root, record.image_id, expectations)
     ]
+    recomputed = sum(
+        (shard_root / f"{record.image_id}.pt").exists() for record in missing
+    )
     encoded = 0
     failed: dict[str, str] = {}
     for start in range(0, len(missing), batch_size):
@@ -155,20 +175,40 @@ def build_latent_cache(
                 f"encoder returned shape {tuple(latents.shape)} for {len(good)} "
                 "images; refusing to assign latents to samples"
             )
+        if latents.shape[2] != embedding_dim or (
+            num_tokens is not None and latents.shape[1] != num_tokens
+        ):
+            raise CacheBuildError(
+                f"encoder returned shape {tuple(latents.shape)}; expected "
+                f"(N, {num_tokens if num_tokens is not None else 'any'}, "
+                f"{embedding_dim})"
+            )
         for row, record in enumerate(good):
             _save_shard(shard_root, record, latents[row : row + 1], expectations)
         encoded += len(good)
 
     if failed:
+        partial = BuildReport(
+            final_path,
+            len(ids),
+            encoded,
+            len(ids) - len(missing),
+            False,
+            recomputed,
+            dict(failed),
+        )
         raise CacheBuildError(
             f"{len(failed)} of {len(ids)} samples failed; no final cache written "
             f"for {category}/{split}: {failed}",
             failed,
+            partial,
         )
 
     _assemble(records, shard_root, final_path, expectations, spec)
     shutil.rmtree(shard_root, ignore_errors=True)
-    return BuildReport(final_path, len(ids), encoded, len(ids) - encoded, False)
+    return BuildReport(
+        final_path, len(ids), encoded, len(ids) - encoded, False, recomputed
+    )
 
 
 def build_nominal_latent_caches(
@@ -224,20 +264,19 @@ def _validate_records(
             )
 
 
-def _load_shard(
+def _shard_is_valid(
     shard_root: Path,
     sample_id: str,
     expectations: _Expectations,
-) -> Tensor | None:
-    """A compatible, intact shard's latents, else ``None`` (shards are derived data)."""
-    make = expectations
+) -> bool:
+    """True for a compatible, intact shard; stale or corrupt ones are derived data."""
     try:
         entry = try_load_latent_cache(
-            shard_root / f"{sample_id}.pt", make((sample_id,))
+            shard_root / f"{sample_id}.pt", expectations((sample_id,))
         )
     except CacheCorruptedError:
-        return None
-    return None if entry is None else entry.latents
+        return False
+    return entry is not None
 
 
 def _save_shard(

@@ -336,3 +336,108 @@ def test_wrong_category_and_bad_arguments_are_rejected(tmp_path: Path) -> None:
             batch_size=0,
             **COMMON,
         )
+
+
+def test_report_counts_recomputed_shards(tmp_path: Path) -> None:
+    train, _ = _data(tmp_path)
+    with pytest.raises(RuntimeError):
+        build_latent_cache(
+            train.samples,
+            MockEncoder(fail_on_call=1),
+            cache_root=tmp_path,
+            split="train",
+            batch_size=5,
+            **COMMON,
+        )
+    shards = sorted(parts_dir(tmp_path, "bottle", "train").glob("*.pt"))
+    shards[0].write_bytes(b"garbage")
+
+    report = build_latent_cache(
+        train.samples, MockEncoder(), cache_root=tmp_path, split="train", **COMMON
+    )
+
+    assert (report.encoded, report.recomputed, report.reused) == (6, 1, 4)
+    assert report.failed == {}
+
+
+def test_failed_sample_report_is_attached_to_the_error(tmp_path: Path) -> None:
+    train, _ = _data(tmp_path)
+    bad = train.samples[0]
+    bad.image_path.write_bytes(b"not an image")
+
+    with pytest.raises(CacheBuildError) as raised:
+        build_latent_cache(
+            train.samples, MockEncoder(), cache_root=tmp_path, split="train", **COMMON
+        )
+
+    report = raised.value.report
+    assert report is not None
+    assert (report.total, report.encoded, report.reused) == (10, 9, 0)
+    assert set(report.failed) == {bad.image_id}
+
+
+def test_wrong_token_count_or_embedding_dim_is_rejected_before_saving(
+    tmp_path: Path,
+) -> None:
+    train, _ = _data(tmp_path)
+
+    with pytest.raises(CacheBuildError, match="expected"):
+        build_latent_cache(
+            train.samples,
+            MockEncoder(),
+            cache_root=tmp_path,
+            split="train",
+            num_tokens=196,  # mock yields 4 tokens
+            **COMMON,
+        )
+    wrong_dim = dict(COMMON, embedding_dim=DIM + 1)
+    with pytest.raises(CacheBuildError, match="expected"):
+        build_latent_cache(
+            train.samples,
+            MockEncoder(),
+            cache_root=tmp_path,
+            split="train",
+            **wrong_dim,
+        )
+    assert not (tmp_path / "bottle").exists()  # nothing persisted
+
+    report = build_latent_cache(
+        train.samples,
+        MockEncoder(),
+        cache_root=tmp_path,
+        split="train",
+        num_tokens=4,
+        **COMMON,
+    )
+    assert report.encoded == 10
+
+
+def test_cache_metadata_is_consistent_with_the_run(tmp_path: Path) -> None:
+    train, _ = _data(tmp_path)
+    report = build_latent_cache(
+        train.samples, MockEncoder(), cache_root=tmp_path, split="train", **COMMON
+    )
+
+    metadata = load_latent_cache(report.path).metadata
+    assert metadata.category == "bottle" and metadata.split == "train"
+    assert metadata.encoder_name == "mock_encoder"
+    assert metadata.checkpoint_sha256 == SHA
+    assert (metadata.num_tokens, metadata.embedding_dim) == (4, DIM)
+    assert metadata.sample_ids == tuple(s.image_id for s in train.samples)
+
+
+def test_test_split_cache_is_built_only_from_official_test_records(
+    tmp_path: Path,
+) -> None:
+    train, test = _data(tmp_path)
+
+    report = build_latent_cache(
+        test.samples, MockEncoder(), cache_root=tmp_path, split="test", **COMMON
+    )
+
+    ids = load_latent_cache(report.path).metadata.sample_ids
+    assert ids == tuple(s.image_id for s in test.samples)
+    with pytest.raises(DatasetValidationError):
+        build_latent_cache(
+            train.samples, MockEncoder(), cache_root=tmp_path, split="test", **COMMON
+        )

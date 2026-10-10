@@ -214,3 +214,43 @@ v1 caches existed, so nothing is migrated: v1 files are rejected as incompatible
 limits: assembly still builds the whole split tensor in host RAM (about 0.55 MB per
 sample in float16); latents from different batch compositions can differ by float
 rounding (not bit-identical); real checkpoint and GPU runs are unverified.
+
+## [2026-10-10] Cache-generation CLI, run summary, and failure policy
+**Context:** Phase 4 asks for a configurable, resumable generation pipeline with a
+structured run summary, usable on an external GPU host. Phase 3's `caching/builder.py`
+already is the orchestrator (batching, per-sample shards, resume, invalidation), so
+only the gaps below were filled; no second orchestrator was created.
+**Options considered:** A new `cache_builder.py` duplicating the builder; Hydra/
+OmegaConf for configuration; per-sample retry when the encoder raises; or a thin CLI
+and summary layer over the existing builder with argparse.
+**Decision:** (1) `BuildReport` gains `recomputed` (shards that existed but were
+corrupt or incompatible) and `failed`; `CacheBuildError` carries the partial `report`.
+`build_latent_cache` gains `num_tokens`, checked with `embedding_dim` on every encoder
+output before anything is written; a wrong shape raises `CacheBuildError`. (2) New
+`caching/cli.py`: `CacheRunConfig`, `run_cache_generation(config, encoder=None) ->
+RunSummary`, `main(argv)` (`python -m ijepa_ad.caching.cli`, thin wrapper
+`scripts/build_latent_cache.py`). Plain argparse; Hydra stays unwired (no new
+dependency). Defaults mirror `configs/data/mvtec.yaml` and `configs/encoder/vitg16.yaml`.
+(3) Purposes: `nominal` caches `train`+`val` from `train/good` via
+`split_nominal_train_val`; `test` caches only the official test split, as a separate
+entry. Both go through `validate_category_splits`. (4) Failure policy: unreadable
+samples and unusable final entries are recorded in the summary and the run continues
+with the next entry; exit code 1 if any failed, 2 for bad configuration. An exception
+raised by the encoder itself aborts the run and is not retried per sample (OOM or a
+wrong model fails every sample; finished shards stay, so rerunning resumes). (5) The
+mock encoder (`--mock-encoder`) is CPU-only, writes under `<cache-root>/_mock`, uses
+the fixed identity `mock_encoder` / checkpoint hash `0*64`, and the summary reports
+`encoder_kind: "mock"`, `real_checkpoint_inference: false`. (6) `--rebuild` deletes the
+selected entries and shards before building; resume is otherwise automatic. (7) The
+real encoder's input batches are moved to `--device` by a small adapter; the checkpoint
+is hashed once per run.
+**Rationale:** The mock cache directory cannot shadow or overwrite an expensive real
+cache. Retrying per sample would hide systematic failures and double GPU time, while
+resume already gives safe recovery. Continuing past a bad sample or entry gives one
+complete report per run instead of one error at a time.
+**Baseline / prior state:** Phase 3 builder and tests only; no entry point, no
+recomputed/failed accounting, no token-count check, no device handling.
+**Outcome after change:** 118 tests pass on CPU (102 before): 5 more builder tests and
+11 CLI/summary tests (summary totals, resume counts, recomputed shards, nominal-only
+and test-only purposes, `--rebuild`, config errors, exit codes). A mock CLI run on a
+synthetic tree produced `[5, 196, 1408]`. Not verified: real checkpoint, GPU, real MVTec.

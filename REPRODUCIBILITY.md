@@ -72,3 +72,32 @@ Validation status: the generation path (dataset, split, preprocessing, resume, f
 handling, invalidation) is tested on CPU with synthetic images and a mock encoder. A
 real run with the real checkpoint on a GPU, real MVTec images, and real
 `[N, 196, 1408]` latents has not been done.
+
+### Cache-generation command (Phase 4)
+
+Inputs: MVTec AD under `--dataset-root` (default `data/raw/mvtec_ad`), the checkpoint
+(`--checkpoint`, default `checkpoints/IN22K-vit.g.16-600e.pth.tar`) and the pinned
+`external/ijepa` checkout (`--official-repo`). Nothing machine-specific is hardcoded.
+
+```bash
+# CPU smoke test, no checkpoint (writes to data/cache/latents/_mock):
+python -m ijepa_ad.caching.cli --category bottle --mock-encoder
+
+# Real run on the GPU host: nominal train/val caches, then the evaluation cache.
+python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda \
+    --batch-size 8 --summary-json results/cache_nominal.json
+python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda \
+    --purpose test --summary-json results/cache_test.json
+```
+
+Record with the run: the summary JSON (it contains the checkpoint SHA-256, device,
+batch size, and `encoder_kind`), the `external/ijepa` commit, `--val-fraction` (0.1) and
+`--seed` (0), and the torch version. Resume: rerun the identical command; compatible
+entries and shards are skipped, missing/corrupt/incompatible ones are recomputed
+(`recomputed` in the summary). `--rebuild` discards the selected entries first. Exit
+code 0 means every entry is complete, 1 that some failed (see `failed_samples`), 2 a
+configuration error. Mock caches live under `_mock` and carry encoder name
+`mock_encoder`, so they never satisfy a real run's compatibility check.
+
+Validation status: the CLI and summary are tested on CPU with synthetic images and the
+mock encoder only. No real-checkpoint, GPU, or real-MVTec cache generation has been run.
