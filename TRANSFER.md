@@ -2,7 +2,7 @@
 _Last updated: 2026-10-10 10:45, at commit 1c59cbd on branch `DataPipelineAndLatentCaching` (Phase 2 latent cache; pushed to `origin`)_
 
 ## 1. One-paragraph project state
-The data path is implemented and verified on CPU with synthetic data: MVTec discovery and validation, a deterministic nominal-only train/validation split, and deterministic I-JEPA preprocessing to `N×3×224×224`. As of this commit plus the working tree, a versioned latent cache (`caching/cache_schema.py`, `caching/latent_cache.py`) can save and load encoder-shaped tensors with validated metadata, integrity checksum, invalidation checks, and atomic writes; it is tested only with small synthetic tensors. The ViT-g/16 wrapper is tested only with a tiny stand-in model. The real checkpoint has never been loaded, the CUDA VRAM spike has not been run, and no real latent cache exists. The predictor, masking, baselines, and evaluation are not started.
+The data path is implemented and verified on CPU with synthetic data: MVTec discovery and validation, a deterministic nominal-only train/validation split, and deterministic I-JEPA preprocessing to `N×3×224×224`. As of this commit, a versioned latent cache (`caching/cache_schema.py`, `caching/latent_cache.py`) can save and load encoder-shaped tensors with validated metadata, integrity checksum, invalidation checks, and atomic writes; it is tested only with small synthetic tensors. The ViT-g/16 wrapper is tested only with a tiny stand-in model. The real checkpoint has never been loaded, the CUDA VRAM spike has not been run, and no real latent cache exists. The predictor, masking, baselines, and evaluation are not started.
 
 ## 2. Phase checklist
 Mirrors `docs/IMPLEMENTATION_PLAN.md` §3.
