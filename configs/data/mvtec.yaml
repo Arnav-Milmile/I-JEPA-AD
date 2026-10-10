@@ -1,1 +1,21 @@
-# Reserved for the MVTec AD data configuration.
+# MVTec AD data configuration.
+# Not loaded by code yet (Hydra is not wired in); values mirror the defaults of
+# ijepa_ad.data.transforms.PreprocessConfig and the arguments expected by
+# ijepa_ad.data.splits.split_nominal_train_val.
+root: data/raw/mvtec_ad
+pilot_categories: [bottle, capsule, hazelnut]
+
+preprocessing:
+  # Full-image bilinear resize, no crop, identical for train/val/test.
+  image_size: 224
+  resize: bilinear
+  # Official I-JEPA normalization (facebookresearch/ijepa src/transforms.py).
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+
+nominal_split:
+  # Held out from train/good only; the official test split is evaluation-only.
+  val_fraction: 0.1
+  seed: 0
+  min_train: 1
+  min_val: 1
