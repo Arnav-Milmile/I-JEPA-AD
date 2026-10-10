@@ -130,3 +130,163 @@ completeness, seed reproducibility, input-order independence, global-state
 isolation, rejection of defect/masked/test records, insufficient-sample errors, and
 invalid arguments. Default `val_fraction: 0.1`, `seed: 0` recorded in
 `configs/data/mvtec.yaml`.
+
+## [2026-10-10] Latent cache format and schema
+**Context:** Phase 2 needs a way to store frozen-encoder outputs (`N×196×1408`) so the
+predictor never re-runs ViT-g/16, and to know when a stored cache is stale. Real
+cache generation happens later on an external GPU machine; this phase is
+CPU/synthetic only.
+**Options considered:** `torch.save` of a plain dict with a pickled metadata object;
+`safetensors` (new dependency); NumPy `.npz`; or `torch.save` of tensors and strings
+only, with metadata as a canonical JSON string.
+**Decision:** One `.pt` file per (category, split) at `<root>/<category>/<split>.pt`,
+containing exactly `{"latents": Tensor, "metadata_json": str}`, loaded with
+`torch.load(weights_only=True)`. Metadata is the frozen dataclass `CacheMetadata`
+(`schema_version=1`) in `src/ijepa_ad/caching/cache_schema.py`, serialized as sorted,
+compact JSON and fully re-validated on load (unknown or missing keys rejected, bool
+is not an int, shape/dtype/token-count cross-checked, unsupported version raises
+`UnsupportedSchemaVersionError`). It records category, split, ordered SHA-256 sample
+ids, encoder name, checkpoint SHA-256, patch size, input shape, a `PreprocessingSpec`
+(image size, mean, std, resize, crop), latent shape/dtype, token count, embedding
+dim, a SHA-256 of the latent bytes, UTC creation time, and torch version. Reuse goes
+through `CacheExpectations`; any difference raises `CacheIncompatibleError`.
+`try_load_latent_cache` maps missing/stale to `None` but lets corruption raise.
+Writes use a same-directory temp file, `fsync`, then `os.replace`. Category and split
+must be plain names so they cannot escape the cache root.
+**Rationale:** Tensors plus strings is the whole payload, so `weights_only=True`
+works and no arbitrary object is ever unpickled; no dependency is added. The content
+checksum catches truncation and bit rot that `torch.load` might not. Keeping the
+metadata in the same file as the tensor means they cannot drift apart, and atomic
+replace means a crash leaves either the old entry or none. One file per
+category/split matches how the predictor consumes data (MVTec categories are a few
+hundred images). Hostname, user, and absolute paths are deliberately not recorded.
+**Baseline / prior state:** none — new (`caching/` held only an empty `__init__.py`).
+**Outcome after change:** 37 unit tests in `tests/unit/test_latent_cache.py` pass on
+CPU with small synthetic tensors (round trip, dtypes, bad/missing fields, corruption,
+tampering, each invalidation rule, atomic-write failure). Not verified: real
+checkpoint hashing, real ViT-g/16 outputs, real MVTec images, GPU. Latents are
+stored in the dtype the caller passes (float32/float16/bfloat16); choosing the
+production dtype is pending the VRAM spike.
+
+## [2026-10-10] Resumable cache generation and schema version 2
+**Context:** Phase 3 connects the data pipeline to the cache. A split-level entry held
+whole in memory cannot be resumed after a crash, a failed sample must never shift
+latents onto the wrong sample, and the schema did not record a preprocessing version.
+Supersedes the schema-version-1 details of the 2026-10-10 "Latent cache format and
+schema" entry; the file layout, payload keys, safe loading, and atomic write are
+unchanged.
+**Options considered:** Shard files per batch (fragile id association); one per-sample
+file as the only layout (changes the decided layout); or per-sample *shards* that are
+themselves valid one-sample cache entries, assembled into the unchanged
+`<category>/<split>.pt`.
+**Decision:** (1) `caching/builder.py::build_latent_cache` preprocesses each sample
+individually, encodes in batches, and writes every sample's latents to
+`<root>/<category>/.<split>.parts/<image_id>.pt` (a one-sample entry saved with
+`save_latent_cache`, so it carries and is checked against full metadata). Compatible
+shards are skipped on resume; missing, incompatible, or corrupted shards are
+recomputed (shards are derived data). When every sample has a shard they are
+assembled in sample order into the final entry, then the parts directory is removed.
+A compatible final entry short-circuits everything; a corrupted final entry raises
+and is never overwritten silently. (2) Any sample that cannot be preprocessed is
+recorded and raises `CacheBuildError` after the remaining samples are processed; good
+shards are kept and no final entry is written from partial results. An encoder that
+returns the wrong number of rows raises before anything is saved. (3) `train`/`val`
+entries accept only records passing `validate_training_records` (`train/good`,
+unmasked, `split == "train"`); `build_nominal_latent_caches` goes through
+`split_nominal_train_val`. (4) `PreprocessingSpec` gains `version`
+(`transforms.PREPROCESSING_VERSION = 1`); `SCHEMA_VERSION` is now 2. Bump the
+preprocessing version whenever `preprocess_image` changes output for the same config.
+(5) `LatentCache` gains `get/select/index_of/in` for lookup by `image_id`, and
+`cache_exists(path, expected)` fully validates before answering. Cache identity is
+category + split + ordered sample ids (content hashes) + encoder name + checkpoint
+SHA-256 + patch size + embedding dim + preprocessing spec + schema version; no
+absolute path is part of it.
+**Rationale:** Reusing `save_latent_cache` and `CacheExpectations` for shards avoids a
+second format and gives resume the same checks as reuse. Writing shards per batch
+bounds memory during encoding. Failing loudly on a bad sample keeps split-level
+entries aligned with the dataset instead of silently shorter.
+**Baseline / prior state:** Schema v1 (no preprocessing version); nothing called
+`save_latent_cache` outside tests; no lookup by id; no resume.
+**Outcome after change:** New unit tests (lookup, `cache_exists`, preprocessing version)
+and 11 integration tests (mock encoder, synthetic MVTec tree, CPU) cover association,
+resume, corrupt shards, invalidation, failed samples, and nominal-only enforcement. No
+v1 caches existed, so nothing is migrated: v1 files are rejected as incompatible. Known
+limits: assembly still builds the whole split tensor in host RAM (about 0.55 MB per
+sample in float16); latents from different batch compositions can differ by float
+rounding (not bit-identical); real checkpoint and GPU runs are unverified.
+
+## [2026-10-10] Cache-generation CLI, run summary, and failure policy
+**Context:** Phase 4 asks for a configurable, resumable generation pipeline with a
+structured run summary, usable on an external GPU host. Phase 3's `caching/builder.py`
+already is the orchestrator (batching, per-sample shards, resume, invalidation), so
+only the gaps below were filled; no second orchestrator was created.
+**Options considered:** A new `cache_builder.py` duplicating the builder; Hydra/
+OmegaConf for configuration; per-sample retry when the encoder raises; or a thin CLI
+and summary layer over the existing builder with argparse.
+**Decision:** (1) `BuildReport` gains `recomputed` (shards that existed but were
+corrupt or incompatible) and `failed`; `CacheBuildError` carries the partial `report`.
+`build_latent_cache` gains `num_tokens`, checked with `embedding_dim` on every encoder
+output before anything is written; a wrong shape raises `CacheBuildError`. (2) New
+`caching/cli.py`: `CacheRunConfig`, `run_cache_generation(config, encoder=None) ->
+RunSummary`, `main(argv)` (`python -m ijepa_ad.caching.cli`, thin wrapper
+`scripts/build_latent_cache.py`). Plain argparse; Hydra stays unwired (no new
+dependency). Defaults mirror `configs/data/mvtec.yaml` and `configs/encoder/vitg16.yaml`.
+(3) Purposes: `nominal` caches `train`+`val` from `train/good` via
+`split_nominal_train_val`; `test` caches only the official test split, as a separate
+entry. Both go through `validate_category_splits`. (4) Failure policy: unreadable
+samples and unusable final entries are recorded in the summary and the run continues
+with the next entry; exit code 1 if any failed, 2 for bad configuration. An exception
+raised by the encoder itself aborts the run and is not retried per sample (OOM or a
+wrong model fails every sample; finished shards stay, so rerunning resumes). (5) The
+mock encoder (`--mock-encoder`) is CPU-only, writes under `<cache-root>/_mock`, uses
+the fixed identity `mock_encoder` / checkpoint hash `0*64`, and the summary reports
+`encoder_kind: "mock"`, `real_checkpoint_inference: false`. (6) `--rebuild` deletes the
+selected entries and shards before building; resume is otherwise automatic. (7) The
+real encoder's input batches are moved to `--device` by a small adapter; the checkpoint
+is hashed once per run.
+**Rationale:** The mock cache directory cannot shadow or overwrite an expensive real
+cache. Retrying per sample would hide systematic failures and double GPU time, while
+resume already gives safe recovery. Continuing past a bad sample or entry gives one
+complete report per run instead of one error at a time.
+**Baseline / prior state:** Phase 3 builder and tests only; no entry point, no
+recomputed/failed accounting, no token-count check, no device handling.
+**Outcome after change:** 118 tests pass on CPU (102 before): 5 more builder tests and
+11 CLI/summary tests (summary totals, resume counts, recomputed shards, nominal-only
+and test-only purposes, `--rebuild`, config errors, exit codes). A mock CLI run on a
+synthetic tree produced `[5, 196, 1408]`. Not verified: real checkpoint, GPU, real MVTec.
+
+## [2026-10-10] Phase 5 end-to-end validation and two integration fixes
+**Context:** Phase 5 asks whether dataset → validation → nominal split → preprocessing
+→ encoder interface → cache → reload works as one system, and whether leakage,
+stale-cache reuse, or misassociation is possible. Verified against the code, not the
+earlier docs. No existing decision is reversed; the split policy, preprocessing, cache
+schema (v2), and failure policy are unchanged.
+**Options considered:** Only add tests; fix defects found by the tests with a regression
+test written first; or also redesign the failure policy (per-sample retry, catching all
+exceptions in the CLI).
+**Decision:** (1) `MVTecADDataset` raises `ValueError` for any split other than `train`
+or `test`. Before, an unknown split such as `"val"` fell through to the test-tree
+branch, and with `validate=False` returned official test images labelled `val`; a
+validation set must never be readable from `test/`. (2) `build_latent_cache` checks
+that every encoder output batch is finite and raises `CacheBuildError` before any shard
+of that batch is written. Before, `save_latent_cache` raised a bare `CacheMetadataError`
+partway through the batch, which the CLI did not catch (traceback, no summary). It now
+follows the existing wrong-shape policy: the CLI records the entry as failed and moves
+on; shards from earlier batches stay and are valid. (3) Confirmed, unchanged: duplicate
+image content inside `train/good` is rejected, not deduplicated (`duplicate image ID`),
+so one bad category stops that category's run. (4) Confirmed, unchanged: cache rows
+follow the order of the records passed in (split output is path-sorted), so the same
+images under different filenames give a different row order and are therefore rebuilt,
+never misread. (5) Reuse always re-runs record validation first; an existing cache never
+bypasses dataset or leakage checks.
+**Rationale:** Both defects were found by probing, then pinned by a failing regression
+test before the fix. The fixes are minimal and keep existing behaviour for valid input.
+**Baseline / prior state:** 118 tests passed; the two behaviours above were untested.
+**Outcome after change:** 137 tests pass on CPU: 18 in
+`tests/integration/test_pipeline_end_to_end.py` and 1 in `test_mvtec_dataset.py`. Covered:
+full pipeline with association checks, order/filename-independent split membership,
+duplicate and leaked images, reuse after dataset invalidation, global RNG and source
+files untouched, cache files moved across category/split, shards copied under another
+sample's name, failed atomic replace, truncated and tampered entries, reordered ids,
+changed dim/seed, repeat-run identity, batch-size tolerance. Synthetic data and a mock
+encoder only; no real MVTec, checkpoint, or GPU.

@@ -1,11 +1,13 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 1 preprocessing and nominal split added._
+_Last reviewed against src/: 2026-10-10 — Phase 5 end-to-end validation (two fixes, see DECISIONS.md)._
 
 ## 1. High-Level Design
-The data path is implemented up to the frozen encoder's input. Caching, predictor,
-masking, baselines, and evaluation packages are still empty.
+The data path is implemented through latent caching (generation, resume, lookup) and
+validated end to end on synthetic data with a mock encoder (Phase 5). **Not
+implemented:** the predictor, masking, baselines, and evaluation packages (empty); the
+real encoder has never run on real weights or images.
 
 ```text
 <root>/<category>/{train,test,ground_truth}
@@ -23,7 +25,15 @@ data.transforms.preprocess_batch ──> Tensor[N, 3, 224, 224]  (I-JEPA normali
 encoder.ijepa_wrapper.IJEPAEncoder.encode ──> Tensor[N, 196, 1408]  (frozen)
         │
         ▼
-caching / predictor / masking / baselines / evaluation   — not implemented
+caching.cli (CLI → CacheRunConfig → run_cache_generation → RunSummary)
+        │   for each category/purpose calls ↓
+caching.builder.build_latent_cache  (batches; per-sample shards
+        │   <split>.parts/<id>.pt; resumable; assembles only when complete)
+        ▼                                 ──> <root>/<category>/<split>.pt
+        │  load_latent_cache(path, CacheExpectations) ──> LatentCache(latents, metadata)
+        │  .get(image_id) / .select(ids)   — no encoder re-run
+        ▼
+predictor / masking / baselines / evaluation   — not implemented
 ```
 
 The `utils` package now provides cross-cutting controls used by every future
@@ -46,6 +56,8 @@ have the corresponding official mask at
 SHA-256 digest of file content, which catches copied images even when MVTec
 filenames repeat across its official train and test directories. The split validator
 rejects duplicate IDs within a split and any ID shared across train and test.
+`MVTecADDataset` accepts only `split` `train` or `test` (anything else raises
+`ValueError`).
 
 The predictor's validation set is a nominal-only holdout carved from the official
 training records by `data.splits`; the official test split is never read or
@@ -70,10 +82,10 @@ Foundational utility interfaces:
   reads `torch.cuda.max_memory_allocated()` on CUDA hosts and safely reports zero
   on CPU-only hosts.
 
-Caching, predictor, masking, baselines, and evaluation packages are still empty.
+Predictor, masking, baselines, and evaluation packages are still empty.
 Hydra/OmegaConf is not wired in: `configs/data/mvtec.yaml` records `root`,
 `pilot_categories`, `preprocessing.{image_size, resize, mean, std}`, and
-`nominal_split.{val_fraction, seed, min_train, min_val}`, but no code loads it yet.
+`nominal_split.{val_fraction, seed, min_train, min_val}`, `latent_cache.root`, but no code loads it yet.
 Its values mirror `PreprocessConfig` defaults and the arguments callers must pass to
 `split_nominal_train_val`.
 
@@ -112,18 +124,112 @@ Encoder interface:
   checkpoint is missing, lacks `target_encoder`, or does not exactly match the
   architecture.
 
+Caching interfaces (`src/ijepa_ad/caching/`):
+
+- [`cli.py`](src/ijepa_ad/caching/cli.py): `python -m ijepa_ad.caching.cli
+  --category NAME [NAME ...] [--purpose nominal|test] [--dataset-root] [--cache-root]
+  [--batch-size] [--device] [--val-fraction] [--seed] [--rebuild] [--mock-encoder]
+  [--checkpoint] [--official-repo] [--encoder-name] [--summary-json]`;
+  `CacheRunConfig`, `run_cache_generation(config, encoder=None) -> RunSummary`,
+  `main(argv) -> int` (0 all complete, 1 some entries/samples failed, 2 bad
+  configuration). `RunSummary.to_dict()` holds totals (`samples_discovered`,
+  `skipped_compatible`, `encoded_new`, `recomputed`, `failed`), per-entry results,
+  `failed_samples`, cache root, device, encoder name/hash, and `encoder_kind`
+  (`mock`/`real`) with `real_checkpoint_inference`. Mock runs write to
+  `<cache-root>/_mock`. `scripts/build_latent_cache.py` is a thin wrapper.
+
+- [`builder.py`](src/ijepa_ad/caching/builder.py): `build_latent_cache(samples,
+  encoder, *, cache_root, category, split, encoder_name, checkpoint_sha256,
+  patch_size, embedding_dim, num_tokens=None, config=None, batch_size=8) ->
+  BuildReport` (`encoded`, `reused`, `recomputed`, `failed`, `already_complete`);
+  `build_nominal_latent_caches(train_samples, encoder, *, val_fraction, seed,
+  ...)` (split, then cache `train` and `val`); `parts_dir(...)`. `encoder` is
+  anything with `encode(Tensor[N,3,S,S]) -> Tensor[N,tokens,dim]` (`IJEPAEncoder`
+  or a mock). Error: `CacheBuildError` (has `.failed` and the partial `.report`);
+  encoder output with the wrong row count, token count, or dim raises it before saving.
+
+- [`cache_schema.py`](src/ijepa_ad/caching/cache_schema.py): `SCHEMA_VERSION = 2`;
+  frozen `CacheMetadata` (`to_json()`, `from_json()`, `from_dict()`),
+  `PreprocessingSpec.from_config(PreprocessConfig)`, and `CacheExpectations`
+  (`mismatches(metadata)`). Errors: `CacheMetadataError`,
+  `UnsupportedSchemaVersionError`.
+- [`latent_cache.py`](src/ijepa_ad/caching/latent_cache.py):
+  `latent_cache_path(root, category, split)`, `build_metadata(latents, *, category,
+  split, sample_ids, encoder_name, checkpoint_sha256, patch_size, preprocessing)`,
+  `save_latent_cache(path, latents, metadata)`, `load_latent_cache(path, expected)`,
+  `try_load_latent_cache(path, expected)`, `compute_file_sha256(path)`, `cache_exists(path, expected)`. `LatentCache` offers
+  `get(id)`, `select(ids)`, `index_of(id)`, and `in`. Errors:
+  `CacheNotFoundError`, `CacheCorruptedError`, `CacheIncompatibleError` (all
+  `CacheError`).
+
+Latent cache schema (version 2; v1 lacked `preprocessing.version`). Layout: `<cache_root>/<category>/<split>.pt`, where
+split is `train`, `val` or `test`; default root `data/cache/latents` (gitignored via
+`/data/`). The file holds exactly `latents` (`N×tokens×dim` tensor) and
+`metadata_json` (canonical JSON of):
+
+| field | meaning |
+| --- | --- |
+| `schema_version` | integer, must equal 2 |
+| `category`, `split` | MVTec category and split name |
+| `sample_ids` | ordered, unique SHA-256 `image_id`s, one per latent row |
+| `encoder_name`, `patch_size` | encoder identifier (`configs/encoder/vitg16.yaml`) and patch size |
+| `checkpoint_sha256` | SHA-256 of the checkpoint file |
+| `input_shape` | `[3, S, S]` fed to the encoder |
+| `preprocessing` | `image_size`, `mean`, `std`, `resize`, `crop`, `version` (`PREPROCESSING_VERSION`) |
+| `latent_shape`, `latent_dtype`, `num_tokens`, `embedding_dim` | tensor description (`float16`/`bfloat16`/`float32`) |
+| `latents_sha256` | SHA-256 of the latent bytes (integrity) |
+| `created_at_utc`, `torch_version` | provenance |
+
+Invalidation: an entry is reusable only if schema version, category, split, encoder
+name, checkpoint hash, patch size, embedding dim, and the full preprocessing spec
+(plus `sample_ids`, when the caller passes them) equal the caller's
+`CacheExpectations`. Otherwise `CacheIncompatibleError`; `try_load_latent_cache`
+returns `None` so the caller rebuilds. A checksum, shape, dtype, or metadata failure
+is `CacheCorruptedError` and is never swallowed.
+
 ## 3. Runtime Flow
 Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime
 blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output is
 sent through the logger returned by `setup_logging()`.
 
 Implemented data flow for one category (verified on synthetic data in
-`tests/integration/test_data_pipeline.py` with a stub encoder):
+`tests/integration/test_data_pipeline.py` and `test_latent_cache_pipeline.py`
+with mock encoders):
 
 1. `train, test = validate_category_splits(root, category)`
 2. `split = split_nominal_train_val(train, val_fraction=0.1, seed=0)`
 3. `batch = preprocess_batch([sample.image_path for sample in split.train])`
 4. `latents = IJEPAEncoder(...).encode(batch)` → `[N, 196, 1408]`
+5. `meta = build_metadata(latents, category=..., split=..., sample_ids=[s.image_id
+   ...], encoder_name=..., checkpoint_sha256=compute_file_sha256(ckpt),
+   patch_size=16, preprocessing=PreprocessingSpec.from_config(config))`, then
+   `save_latent_cache(latent_cache_path(root, category, split), latents, meta)`
+6. Later runs: `try_load_latent_cache(path, CacheExpectations(...))`; `None` means
+   rebuild from step 3.
+
+Steps 3–6 are wrapped by `build_nominal_latent_caches(train.samples, encoder,
+val_fraction=0.1, seed=0, cache_root=..., category=..., encoder_name=...,
+checkpoint_sha256=..., patch_size=16, embedding_dim=1408)`. Per batch it
+preprocesses each sample, encodes, and writes one shard per sample; a rerun skips
+compatible shards; the final `<split>.pt` is written only when every sample has a
+shard. An unreadable image raises `CacheBuildError` (good shards kept, no final
+entry). Only mock encoders have been run; no real-encoder cache exists.
+
+The CLI performs the same flow per category: `validate_category_splits`, then for
+`--purpose nominal` `split_nominal_train_val` and caches `train` and `val`; for
+`--purpose test` only the official test records, as a separate `test` entry. Samples
+that cannot be read, and entries that are unusable (e.g. a corrupted final file), are
+recorded in the summary and the run moves on. An exception from the encoder aborts the
+run (finished shards are kept; rerun to resume). Only the mock encoder has been run.
+
+Every entry point re-validates records before looking at the cache: `build_latent_cache`
+calls `validate_training_records` / `validate_test_records` first, and the CLI calls
+`validate_category_splits` first, so an existing cache never bypasses dataset or leakage
+checks. Reuse then requires an exact match of the metadata (see Invalidation); a cache
+file copied to another category or split, or a shard copied under another sample's
+name, is incompatible and is rebuilt. Each encoder output batch must have the right
+rows/tokens/dim and be finite before any of its shards are written (`CacheBuildError`).
+Row order in an entry is the order of the records given (split output is path-sorted).
 
 Test defects remain evaluation-only and never participate in model selection.
 

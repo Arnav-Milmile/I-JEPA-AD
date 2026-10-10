@@ -43,6 +43,8 @@ class MVTecADDataset(Sequence[MVTecSample]):
         *,
         validate: bool = True,
     ) -> None:
+        if split not in ("train", "test"):
+            raise ValueError(f"split must be 'train' or 'test', got {split!r}")
         self.root = Path(root)
         self.category = category
         self.split = split

@@ -23,6 +23,9 @@ from torch import Tensor
 IJEPA_MEAN = (0.485, 0.456, 0.406)
 IJEPA_STD = (0.229, 0.224, 0.225)
 IMAGE_SIZE = 224
+# Bump when preprocess_image changes behavior for the same PreprocessConfig, so
+# latent caches built with the old behavior are invalidated.
+PREPROCESSING_VERSION = 1
 
 ImageInput: TypeAlias = "str | Path | Image.Image"
 
