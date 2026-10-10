@@ -130,3 +130,40 @@ completeness, seed reproducibility, input-order independence, global-state
 isolation, rejection of defect/masked/test records, insufficient-sample errors, and
 invalid arguments. Default `val_fraction: 0.1`, `seed: 0` recorded in
 `configs/data/mvtec.yaml`.
+
+## [2026-10-10] Latent cache format and schema
+**Context:** Phase 2 needs a way to store frozen-encoder outputs (`N×196×1408`) so the
+predictor never re-runs ViT-g/16, and to know when a stored cache is stale. Real
+cache generation happens later on an external GPU machine; this phase is
+CPU/synthetic only.
+**Options considered:** `torch.save` of a plain dict with a pickled metadata object;
+`safetensors` (new dependency); NumPy `.npz`; or `torch.save` of tensors and strings
+only, with metadata as a canonical JSON string.
+**Decision:** One `.pt` file per (category, split) at `<root>/<category>/<split>.pt`,
+containing exactly `{"latents": Tensor, "metadata_json": str}`, loaded with
+`torch.load(weights_only=True)`. Metadata is the frozen dataclass `CacheMetadata`
+(`schema_version=1`) in `src/ijepa_ad/caching/cache_schema.py`, serialized as sorted,
+compact JSON and fully re-validated on load (unknown or missing keys rejected, bool
+is not an int, shape/dtype/token-count cross-checked, unsupported version raises
+`UnsupportedSchemaVersionError`). It records category, split, ordered SHA-256 sample
+ids, encoder name, checkpoint SHA-256, patch size, input shape, a `PreprocessingSpec`
+(image size, mean, std, resize, crop), latent shape/dtype, token count, embedding
+dim, a SHA-256 of the latent bytes, UTC creation time, and torch version. Reuse goes
+through `CacheExpectations`; any difference raises `CacheIncompatibleError`.
+`try_load_latent_cache` maps missing/stale to `None` but lets corruption raise.
+Writes use a same-directory temp file, `fsync`, then `os.replace`. Category and split
+must be plain names so they cannot escape the cache root.
+**Rationale:** Tensors plus strings is the whole payload, so `weights_only=True`
+works and no arbitrary object is ever unpickled; no dependency is added. The content
+checksum catches truncation and bit rot that `torch.load` might not. Keeping the
+metadata in the same file as the tensor means they cannot drift apart, and atomic
+replace means a crash leaves either the old entry or none. One file per
+category/split matches how the predictor consumes data (MVTec categories are a few
+hundred images). Hostname, user, and absolute paths are deliberately not recorded.
+**Baseline / prior state:** none — new (`caching/` held only an empty `__init__.py`).
+**Outcome after change:** 37 unit tests in `tests/unit/test_latent_cache.py` pass on
+CPU with small synthetic tensors (round trip, dtypes, bad/missing fields, corruption,
+tampering, each invalidation rule, atomic-write failure). Not verified: real
+checkpoint hashing, real ViT-g/16 outputs, real MVTec images, GPU. Latents are
+stored in the dtype the caller passes (float32/float16/bfloat16); choosing the
+production dtype is pending the VRAM spike.

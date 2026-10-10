@@ -19,3 +19,8 @@ nominal_split:
   seed: 0
   min_train: 1
   min_val: 1
+
+latent_cache:
+  # One file per entry: <root>/<category>/<split>.pt (see FLOW.md). Under /data/,
+  # which is gitignored, so generated caches are never committed.
+  root: data/cache/latents

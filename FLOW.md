@@ -1,7 +1,7 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 1 preprocessing and nominal split added._
+_Last reviewed against src/: 2026-10-10 — Phase 2 latent cache schema and storage added._
 
 ## 1. High-Level Design
 The data path is implemented up to the frozen encoder's input. Caching, predictor,
@@ -23,7 +23,10 @@ data.transforms.preprocess_batch ──> Tensor[N, 3, 224, 224]  (I-JEPA normali
 encoder.ijepa_wrapper.IJEPAEncoder.encode ──> Tensor[N, 196, 1408]  (frozen)
         │
         ▼
-caching / predictor / masking / baselines / evaluation   — not implemented
+caching.latent_cache.save_latent_cache ──> <root>/<category>/<split>.pt
+        │  load_latent_cache(path, CacheExpectations) ──> LatentCache(latents, metadata)
+        ▼
+predictor / masking / baselines / evaluation   — not implemented
 ```
 
 The `utils` package now provides cross-cutting controls used by every future
@@ -70,10 +73,10 @@ Foundational utility interfaces:
   reads `torch.cuda.max_memory_allocated()` on CUDA hosts and safely reports zero
   on CPU-only hosts.
 
-Caching, predictor, masking, baselines, and evaluation packages are still empty.
+Predictor, masking, baselines, and evaluation packages are still empty.
 Hydra/OmegaConf is not wired in: `configs/data/mvtec.yaml` records `root`,
 `pilot_categories`, `preprocessing.{image_size, resize, mean, std}`, and
-`nominal_split.{val_fraction, seed, min_train, min_val}`, but no code loads it yet.
+`nominal_split.{val_fraction, seed, min_train, min_val}`, `latent_cache.root`, but no code loads it yet.
 Its values mirror `PreprocessConfig` defaults and the arguments callers must pass to
 `split_nominal_train_val`.
 
@@ -112,6 +115,46 @@ Encoder interface:
   checkpoint is missing, lacks `target_encoder`, or does not exactly match the
   architecture.
 
+Caching interfaces (`src/ijepa_ad/caching/`):
+
+- [`cache_schema.py`](src/ijepa_ad/caching/cache_schema.py): `SCHEMA_VERSION = 1`;
+  frozen `CacheMetadata` (`to_json()`, `from_json()`, `from_dict()`),
+  `PreprocessingSpec.from_config(PreprocessConfig)`, and `CacheExpectations`
+  (`mismatches(metadata)`). Errors: `CacheMetadataError`,
+  `UnsupportedSchemaVersionError`.
+- [`latent_cache.py`](src/ijepa_ad/caching/latent_cache.py):
+  `latent_cache_path(root, category, split)`, `build_metadata(latents, *, category,
+  split, sample_ids, encoder_name, checkpoint_sha256, patch_size, preprocessing)`,
+  `save_latent_cache(path, latents, metadata)`, `load_latent_cache(path, expected)`,
+  `try_load_latent_cache(path, expected)`, `compute_file_sha256(path)`. Errors:
+  `CacheNotFoundError`, `CacheCorruptedError`, `CacheIncompatibleError` (all
+  `CacheError`).
+
+Latent cache schema (version 1). Layout: `<cache_root>/<category>/<split>.pt`, where
+split is `train`, `val` or `test`; default root `data/cache/latents` (gitignored via
+`/data/`). The file holds exactly `latents` (`N×tokens×dim` tensor) and
+`metadata_json` (canonical JSON of):
+
+| field | meaning |
+| --- | --- |
+| `schema_version` | integer, must equal 1 |
+| `category`, `split` | MVTec category and split name |
+| `sample_ids` | ordered, unique SHA-256 `image_id`s, one per latent row |
+| `encoder_name`, `patch_size` | encoder identifier (`configs/encoder/vitg16.yaml`) and patch size |
+| `checkpoint_sha256` | SHA-256 of the checkpoint file |
+| `input_shape` | `[3, S, S]` fed to the encoder |
+| `preprocessing` | `image_size`, `mean`, `std`, `resize`, `crop` |
+| `latent_shape`, `latent_dtype`, `num_tokens`, `embedding_dim` | tensor description (`float16`/`bfloat16`/`float32`) |
+| `latents_sha256` | SHA-256 of the latent bytes (integrity) |
+| `created_at_utc`, `torch_version` | provenance |
+
+Invalidation: an entry is reusable only if schema version, category, split, encoder
+name, checkpoint hash, patch size, embedding dim, and the full preprocessing spec
+(plus `sample_ids`, when the caller passes them) equal the caller's
+`CacheExpectations`. Otherwise `CacheIncompatibleError`; `try_load_latent_cache`
+returns `None` so the caller rebuilds. A checksum, shape, dtype, or metadata failure
+is `CacheCorruptedError` and is never swallowed.
+
 ## 3. Runtime Flow
 Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime
 blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output is
@@ -124,6 +167,15 @@ Implemented data flow for one category (verified on synthetic data in
 2. `split = split_nominal_train_val(train, val_fraction=0.1, seed=0)`
 3. `batch = preprocess_batch([sample.image_path for sample in split.train])`
 4. `latents = IJEPAEncoder(...).encode(batch)` → `[N, 196, 1408]`
+5. `meta = build_metadata(latents, category=..., split=..., sample_ids=[s.image_id
+   ...], encoder_name=..., checkpoint_sha256=compute_file_sha256(ckpt),
+   patch_size=16, preprocessing=PreprocessingSpec.from_config(config))`, then
+   `save_latent_cache(latent_cache_path(root, category, split), latents, meta)`
+6. Later runs: `try_load_latent_cache(path, CacheExpectations(...))`; `None` means
+   rebuild from step 3.
+
+Steps 5–6 are unit-tested with synthetic tensors only; no real-encoder cache has been
+generated.
 
 Test defects remain evaluation-only and never participate in model selection.
 
