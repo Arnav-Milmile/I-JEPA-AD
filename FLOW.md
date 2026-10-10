@@ -1,11 +1,12 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 2 latent cache schema and storage added._
+_Last reviewed against src/: 2026-10-10 — Phase 3 resumable cache generation and lookup added._
 
 ## 1. High-Level Design
-The data path is implemented up to the frozen encoder's input. Caching, predictor,
-masking, baselines, and evaluation packages are still empty.
+The data path is implemented through latent caching (generation, resume, lookup),
+tested with a mock encoder. Predictor, masking, baselines, and evaluation
+packages are still empty.
 
 ```text
 <root>/<category>/{train,test,ground_truth}
@@ -23,8 +24,11 @@ data.transforms.preprocess_batch ──> Tensor[N, 3, 224, 224]  (I-JEPA normali
 encoder.ijepa_wrapper.IJEPAEncoder.encode ──> Tensor[N, 196, 1408]  (frozen)
         │
         ▼
-caching.latent_cache.save_latent_cache ──> <root>/<category>/<split>.pt
+caching.builder.build_latent_cache  (batches; per-sample shards
+        │   <split>.parts/<id>.pt; resumable; assembles only when complete)
+        ▼                                 ──> <root>/<category>/<split>.pt
         │  load_latent_cache(path, CacheExpectations) ──> LatentCache(latents, metadata)
+        │  .get(image_id) / .select(ids)   — no encoder re-run
         ▼
 predictor / masking / baselines / evaluation   — not implemented
 ```
@@ -117,6 +121,14 @@ Encoder interface:
 
 Caching interfaces (`src/ijepa_ad/caching/`):
 
+- [`builder.py`](src/ijepa_ad/caching/builder.py): `build_latent_cache(samples,
+  encoder, *, cache_root, category, split, encoder_name, checkpoint_sha256,
+  patch_size, embedding_dim, config=None, batch_size=8) -> BuildReport`;
+  `build_nominal_latent_caches(train_samples, encoder, *, val_fraction, seed,
+  ...)` (split, then cache `train` and `val`); `parts_dir(...)`. `encoder` is
+  anything with `encode(Tensor[N,3,S,S]) -> Tensor[N,tokens,dim]` (`IJEPAEncoder`
+  or a mock). Error: `CacheBuildError` (has `.failed`).
+
 - [`cache_schema.py`](src/ijepa_ad/caching/cache_schema.py): `SCHEMA_VERSION = 1`;
   frozen `CacheMetadata` (`to_json()`, `from_json()`, `from_dict()`),
   `PreprocessingSpec.from_config(PreprocessConfig)`, and `CacheExpectations`
@@ -126,24 +138,25 @@ Caching interfaces (`src/ijepa_ad/caching/`):
   `latent_cache_path(root, category, split)`, `build_metadata(latents, *, category,
   split, sample_ids, encoder_name, checkpoint_sha256, patch_size, preprocessing)`,
   `save_latent_cache(path, latents, metadata)`, `load_latent_cache(path, expected)`,
-  `try_load_latent_cache(path, expected)`, `compute_file_sha256(path)`. Errors:
+  `try_load_latent_cache(path, expected)`, `compute_file_sha256(path)`, `cache_exists(path, expected)`. `LatentCache` offers
+  `get(id)`, `select(ids)`, `index_of(id)`, and `in`. Errors:
   `CacheNotFoundError`, `CacheCorruptedError`, `CacheIncompatibleError` (all
   `CacheError`).
 
-Latent cache schema (version 1). Layout: `<cache_root>/<category>/<split>.pt`, where
+Latent cache schema (version 2; v1 lacked `preprocessing.version`). Layout: `<cache_root>/<category>/<split>.pt`, where
 split is `train`, `val` or `test`; default root `data/cache/latents` (gitignored via
 `/data/`). The file holds exactly `latents` (`N×tokens×dim` tensor) and
 `metadata_json` (canonical JSON of):
 
 | field | meaning |
 | --- | --- |
-| `schema_version` | integer, must equal 1 |
+| `schema_version` | integer, must equal 2 |
 | `category`, `split` | MVTec category and split name |
 | `sample_ids` | ordered, unique SHA-256 `image_id`s, one per latent row |
 | `encoder_name`, `patch_size` | encoder identifier (`configs/encoder/vitg16.yaml`) and patch size |
 | `checkpoint_sha256` | SHA-256 of the checkpoint file |
 | `input_shape` | `[3, S, S]` fed to the encoder |
-| `preprocessing` | `image_size`, `mean`, `std`, `resize`, `crop` |
+| `preprocessing` | `image_size`, `mean`, `std`, `resize`, `crop`, `version` (`PREPROCESSING_VERSION`) |
 | `latent_shape`, `latent_dtype`, `num_tokens`, `embedding_dim` | tensor description (`float16`/`bfloat16`/`float32`) |
 | `latents_sha256` | SHA-256 of the latent bytes (integrity) |
 | `created_at_utc`, `torch_version` | provenance |
@@ -161,7 +174,8 @@ blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output i
 sent through the logger returned by `setup_logging()`.
 
 Implemented data flow for one category (verified on synthetic data in
-`tests/integration/test_data_pipeline.py` with a stub encoder):
+`tests/integration/test_data_pipeline.py` and `test_latent_cache_pipeline.py`
+with mock encoders):
 
 1. `train, test = validate_category_splits(root, category)`
 2. `split = split_nominal_train_val(train, val_fraction=0.1, seed=0)`
@@ -174,8 +188,13 @@ Implemented data flow for one category (verified on synthetic data in
 6. Later runs: `try_load_latent_cache(path, CacheExpectations(...))`; `None` means
    rebuild from step 3.
 
-Steps 5–6 are unit-tested with synthetic tensors only; no real-encoder cache has been
-generated.
+Steps 3–6 are wrapped by `build_nominal_latent_caches(train.samples, encoder,
+val_fraction=0.1, seed=0, cache_root=..., category=..., encoder_name=...,
+checkpoint_sha256=..., patch_size=16, embedding_dim=1408)`. Per batch it
+preprocesses each sample, encodes, and writes one shard per sample; a rerun skips
+compatible shards; the final `<split>.pt` is written only when every sample has a
+shard. An unreadable image raises `CacheBuildError` (good shards kept, no final
+entry). Only mock encoders have been run; no real-encoder cache exists.
 
 Test defects remain evaluation-only and never participate in model selection.
 

@@ -14,6 +14,7 @@ import contextlib
 import hashlib
 import os
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -62,6 +63,25 @@ class LatentCache:
 
     latents: Tensor
     metadata: CacheMetadata
+
+    def __contains__(self, sample_id: object) -> bool:
+        return sample_id in self.metadata.sample_ids
+
+    def index_of(self, sample_id: str) -> int:
+        """Row of ``sample_id`` in ``latents``; ``KeyError`` if it is not cached."""
+        try:
+            return self.metadata.sample_ids.index(sample_id)
+        except ValueError:
+            raise KeyError(f"sample id not in latent cache: {sample_id!r}") from None
+
+    def get(self, sample_id: str) -> Tensor:
+        """Latents ``tokens×dim`` of one sample, looked up by its stable image id."""
+        return self.latents[self.index_of(sample_id)]
+
+    def select(self, sample_ids: Sequence[str]) -> Tensor:
+        """Latents ``len(sample_ids)×tokens×dim`` in the order requested."""
+        rows = [self.index_of(sample_id) for sample_id in sample_ids]
+        return self.latents[rows]
 
 
 def latent_cache_path(cache_root: str | Path, category: str, split: str) -> Path:
@@ -223,6 +243,15 @@ def try_load_latent_cache(
         return load_latent_cache(path, expected)
     except (CacheNotFoundError, CacheIncompatibleError):
         return None
+
+
+def cache_exists(path: str | Path, expected: CacheExpectations) -> bool:
+    """Whether a valid entry compatible with ``expected`` is at ``path``.
+
+    Fully validates (checksum included), so ``True`` means the entry can be loaded.
+    Missing and stale entries are ``False``; corruption raises ``CacheCorruptedError``.
+    """
+    return try_load_latent_cache(path, expected) is not None
 
 
 def _check_tensor_matches_metadata(tensor: Tensor, metadata: CacheMetadata) -> None:

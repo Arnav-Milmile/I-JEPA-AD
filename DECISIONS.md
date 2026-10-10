@@ -167,3 +167,50 @@ tampering, each invalidation rule, atomic-write failure). Not verified: real
 checkpoint hashing, real ViT-g/16 outputs, real MVTec images, GPU. Latents are
 stored in the dtype the caller passes (float32/float16/bfloat16); choosing the
 production dtype is pending the VRAM spike.
+
+## [2026-10-10] Resumable cache generation and schema version 2
+**Context:** Phase 3 connects the data pipeline to the cache. A split-level entry held
+whole in memory cannot be resumed after a crash, a failed sample must never shift
+latents onto the wrong sample, and the schema did not record a preprocessing version.
+Supersedes the schema-version-1 details of the 2026-10-10 "Latent cache format and
+schema" entry; the file layout, payload keys, safe loading, and atomic write are
+unchanged.
+**Options considered:** Shard files per batch (fragile id association); one per-sample
+file as the only layout (changes the decided layout); or per-sample *shards* that are
+themselves valid one-sample cache entries, assembled into the unchanged
+`<category>/<split>.pt`.
+**Decision:** (1) `caching/builder.py::build_latent_cache` preprocesses each sample
+individually, encodes in batches, and writes every sample's latents to
+`<root>/<category>/.<split>.parts/<image_id>.pt` (a one-sample entry saved with
+`save_latent_cache`, so it carries and is checked against full metadata). Compatible
+shards are skipped on resume; missing, incompatible, or corrupted shards are
+recomputed (shards are derived data). When every sample has a shard they are
+assembled in sample order into the final entry, then the parts directory is removed.
+A compatible final entry short-circuits everything; a corrupted final entry raises
+and is never overwritten silently. (2) Any sample that cannot be preprocessed is
+recorded and raises `CacheBuildError` after the remaining samples are processed; good
+shards are kept and no final entry is written from partial results. An encoder that
+returns the wrong number of rows raises before anything is saved. (3) `train`/`val`
+entries accept only records passing `validate_training_records` (`train/good`,
+unmasked, `split == "train"`); `build_nominal_latent_caches` goes through
+`split_nominal_train_val`. (4) `PreprocessingSpec` gains `version`
+(`transforms.PREPROCESSING_VERSION = 1`); `SCHEMA_VERSION` is now 2. Bump the
+preprocessing version whenever `preprocess_image` changes output for the same config.
+(5) `LatentCache` gains `get/select/index_of/in` for lookup by `image_id`, and
+`cache_exists(path, expected)` fully validates before answering. Cache identity is
+category + split + ordered sample ids (content hashes) + encoder name + checkpoint
+SHA-256 + patch size + embedding dim + preprocessing spec + schema version; no
+absolute path is part of it.
+**Rationale:** Reusing `save_latent_cache` and `CacheExpectations` for shards avoids a
+second format and gives resume the same checks as reuse. Writing shards per batch
+bounds memory during encoding. Failing loudly on a bad sample keeps split-level
+entries aligned with the dataset instead of silently shorter.
+**Baseline / prior state:** Schema v1 (no preprocessing version); nothing called
+`save_latent_cache` outside tests; no lookup by id; no resume.
+**Outcome after change:** New unit tests (lookup, `cache_exists`, preprocessing version)
+and 11 integration tests (mock encoder, synthetic MVTec tree, CPU) cover association,
+resume, corrupt shards, invalidation, failed samples, and nominal-only enforcement. No
+v1 caches existed, so nothing is migrated: v1 files are rejected as incompatible. Known
+limits: assembly still builds the whole split tensor in host RAM (about 0.55 MB per
+sample in float16); latents from different batch compositions can differ by float
+rounding (not bit-identical); real checkpoint and GPU runs are unverified.

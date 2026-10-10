@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from ijepa_ad.data.transforms import PreprocessConfig
+from ijepa_ad.data.transforms import PREPROCESSING_VERSION, PreprocessConfig
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VALID_SPLITS = frozenset({"train", "val", "test"})
 SUPPORTED_LATENT_DTYPES = frozenset({"float16", "bfloat16", "float32"})
 
@@ -50,6 +50,7 @@ class PreprocessingSpec:
     std: tuple[float, float, float]
     resize: str = "bilinear"
     crop: str = "none"
+    version: int = PREPROCESSING_VERSION
 
     @classmethod
     def from_config(cls, config: PreprocessConfig) -> PreprocessingSpec:
@@ -63,13 +64,16 @@ class PreprocessingSpec:
             "std": list(self.std),
             "resize": self.resize,
             "crop": self.crop,
+            "version": self.version,
         }
 
     @classmethod
     def from_dict(cls, data: object) -> PreprocessingSpec:
         mapping = _require_mapping(data, "preprocessing")
         _require_keys(
-            mapping, {"image_size", "mean", "std", "resize", "crop"}, "preprocessing"
+            mapping,
+            {"image_size", "mean", "std", "resize", "crop", "version"},
+            "preprocessing",
         )
         spec = cls(
             image_size=_as_positive_int(
@@ -79,6 +83,7 @@ class PreprocessingSpec:
             std=_as_float_triple(mapping["std"], "preprocessing.std"),
             resize=_as_str(mapping["resize"], "preprocessing.resize"),
             crop=_as_str(mapping["crop"], "preprocessing.crop"),
+            version=_as_positive_int(mapping["version"], "preprocessing.version"),
         )
         if any(value <= 0 for value in spec.std):
             raise CacheMetadataError(

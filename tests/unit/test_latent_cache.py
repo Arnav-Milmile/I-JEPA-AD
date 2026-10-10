@@ -22,6 +22,7 @@ from ijepa_ad.caching.latent_cache import (
     CacheIncompatibleError,
     CacheNotFoundError,
     build_metadata,
+    cache_exists,
     compute_file_sha256,
     latent_cache_path,
     load_latent_cache,
@@ -133,7 +134,7 @@ def test_unknown_field_is_rejected() -> None:
 
 
 def test_unsupported_schema_version_is_rejected() -> None:
-    for version in (0, 2, 99):
+    for version in (0, SCHEMA_VERSION + 1, 99):
         data = _metadata(_latents()).to_dict()
         data["schema_version"] = version
 
@@ -506,3 +507,34 @@ def test_everything_runs_on_cpu_without_checkpoint(tmp_path: Path) -> None:
     path = _saved(tmp_path)
 
     assert load_latent_cache(path).latents.device.type == "cpu"
+
+
+def test_lookup_by_sample_id_returns_matching_rows(tmp_path: Path) -> None:
+    latents = _latents()
+    path = _saved(tmp_path)
+    entry = load_latent_cache(path, _expected(sample_ids=IDS))
+
+    assert "id-1" in entry and "other" not in entry
+    assert entry.index_of("id-2") == 2
+    assert torch.equal(entry.get("id-1"), latents[1])
+    assert torch.equal(entry.select(["id-2", "id-0"]), latents[[2, 0]])
+    with pytest.raises(KeyError, match="other"):
+        entry.get("other")
+
+
+def test_cache_exists_validates_and_distinguishes_states(tmp_path: Path) -> None:
+    path = _saved(tmp_path)
+
+    assert cache_exists(path, _expected())
+    assert not cache_exists(path, _expected(checkpoint_sha256="b" * 64))
+    assert not cache_exists(tmp_path / "missing.pt", _expected())
+    path.write_bytes(path.read_bytes()[:50])
+    with pytest.raises(CacheCorruptedError):
+        cache_exists(path, _expected())
+
+
+def test_preprocessing_version_invalidates_cache(tmp_path: Path) -> None:
+    path = _saved(tmp_path)
+
+    with pytest.raises(CacheIncompatibleError, match="preprocessing"):
+        load_latent_cache(path, _expected(preprocessing=_spec(version=2)))

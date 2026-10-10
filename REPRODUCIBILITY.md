@@ -42,3 +42,33 @@ sizes 1, 4, 8, and 16 using FP16, `torch.no_grad()`, and CUDA autocast.
 For the complete RTX 4090 setup, installation, checkpoint verification, non-skipped
 unit-test check, VRAM table, and real-wrapper smoke test, follow
 [`docs/ENCODER_VITG16_CUDA_RUNBOOK.md`](docs/ENCODER_VITG16_CUDA_RUNBOOK.md).
+
+## Latent cache generation
+
+A cache entry is reusable only when schema version (2), category, split, ordered
+sample ids (SHA-256 of image content), encoder name, patch size, embedding dim,
+checkpoint SHA-256, and the full preprocessing spec (image size, mean, std, resize,
+crop, `PREPROCESSING_VERSION`) all match. Change any of them and the entry is rebuilt;
+nothing is reused silently. Absolute paths are never part of the identity.
+
+Procedure (GPU host, after the runbook's checkpoint verification):
+
+1. `ckpt_sha = compute_file_sha256("checkpoints/IN22K-vit.g.16-600e.pth.tar")`, once
+   per run, and record it with the run. Also record the `external/ijepa` commit above.
+2. `train, test = validate_category_splits(root, category)`.
+3. `build_nominal_latent_caches(train.samples, IJEPAEncoder(...), val_fraction=0.1,
+   seed=0, cache_root="data/cache/latents", category=category,
+   encoder_name="ijepa_vit_g16_in22k_ep44", checkpoint_sha256=ckpt_sha, patch_size=16,
+   embedding_dim=1408)`.
+4. Interrupted? Rerun the same call; compatible per-sample shards in
+   `<category>/.<split>.parts/` are skipped. Delete that directory to force a rebuild.
+5. Consumers call `load_latent_cache(path, CacheExpectations(...))` and `.get(image_id)`.
+
+Latents may differ in the last float bits when the batch size changes, so record the
+batch size and dtype with a run. Preprocessing compatibility: change
+`preprocess_image` output, and `PREPROCESSING_VERSION` must be bumped.
+
+Validation status: the generation path (dataset, split, preprocessing, resume, failure
+handling, invalidation) is tested on CPU with synthetic images and a mock encoder. A
+real run with the real checkpoint on a GPU, real MVTec images, and real
+`[N, 196, 1408]` latents has not been done.
