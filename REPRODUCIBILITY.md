@@ -101,3 +101,45 @@ configuration error. Mock caches live under `_mock` and carry encoder name
 
 Validation status: the CLI and summary are tested on CPU with synthetic images and the
 mock encoder only. No real-checkpoint, GPU, or real-MVTec cache generation has been run.
+
+## Phase 5 validation: reproducing the CPU test run
+
+Environment used (Windows, CPU only, no network, no CUDA, no dataset, no checkpoint):
+Python 3.12.10 (CI uses 3.11), torch 2.14.1+cpu, Pillow 12.3.0, ruff 0.8.6, black
+25.1.0, mypy 1.14.1.
+
+```bash
+python -m venv .venv
+./.venv/Scripts/python.exe -m pip install -e ".[dev]"      # Linux: .venv/bin/python
+./.venv/Scripts/python.exe -m pytest tests/unit tests/integration        # 137 passed
+./.venv/Scripts/python.exe -m pytest tests/integration/test_pipeline_end_to_end.py  # 18 passed
+./.venv/Scripts/ruff.exe check .
+./.venv/Scripts/black.exe --check --workers 1 .
+./.venv/Scripts/mypy.exe src tests
+```
+
+Obtained with synthetic data and the mock encoder only: every test result above, the
+end-to-end pipeline, the cache failure/recovery tests, and the identical-latents check.
+
+Deterministic guarantees (tested): split membership depends only on image content, the
+seed, and `val_fraction` (not on filenames, enumeration or input order, and global RNG
+state is left untouched); preprocessing is a pure function of the file bytes and
+`PreprocessConfig`; cache metadata JSON is canonical (sorted, compact) and, apart from
+`created_at_utc`, two runs give equal metadata; the mock encoder on CPU gives
+bit-identical latents for the same inputs and batch size.
+
+Not guaranteed or not measured: latents are only equal within float tolerance across
+different batch sizes (tested at `atol=1e-4` with the mock); real-model inference on
+GPU or CPU, other dtypes, and other torch/CUDA/cuDNN versions are unmeasured, as are
+the `created_at_utc` and `torch_version` provenance fields, which vary by environment.
+No bitwise-reproducibility claim is made for the real ViT-g/16.
+
+Required for future real execution: MVTec AD under `data/raw/mvtec_ad`
+(`python validate_mvtec.py data/raw/mvtec_ad` first), the checkpoint at
+`checkpoints/IN22K-vit.g.16-600e.pth.tar`, the pinned `external/ijepa` checkout above,
+and a CUDA host per `docs/ENCODER_VITG16_CUDA_RUNBOOK.md`.
+
+Unverified on external GPU hardware: checkpoint load and hashing, the VRAM spike,
+`IJEPAEncoder` inside the CLI (`_load_real_encoder`, device adapter), real
+`[N, 196, 1408]` caches, float16 vs float32 storage, real-MVTec behaviour (including
+whether any category has duplicate training images), and CI on Linux/Python 3.11.

@@ -131,3 +131,13 @@ def test_empty_training_directory_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(DatasetValidationError, match="empty"):
         MVTecADDataset(tmp_path, "bottle", "train")
+
+
+def test_unknown_split_name_is_rejected_instead_of_reading_the_test_tree(
+    tmp_path: Path,
+) -> None:
+    _make_fixture(tmp_path)
+
+    for validate in (True, False):
+        with pytest.raises(ValueError, match="split"):
+            MVTecADDataset(tmp_path, "bottle", "val", validate=validate)  # type: ignore[arg-type]

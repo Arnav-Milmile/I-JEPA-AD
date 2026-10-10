@@ -254,3 +254,39 @@ recomputed/failed accounting, no token-count check, no device handling.
 11 CLI/summary tests (summary totals, resume counts, recomputed shards, nominal-only
 and test-only purposes, `--rebuild`, config errors, exit codes). A mock CLI run on a
 synthetic tree produced `[5, 196, 1408]`. Not verified: real checkpoint, GPU, real MVTec.
+
+## [2026-10-10] Phase 5 end-to-end validation and two integration fixes
+**Context:** Phase 5 asks whether dataset → validation → nominal split → preprocessing
+→ encoder interface → cache → reload works as one system, and whether leakage,
+stale-cache reuse, or misassociation is possible. Verified against the code, not the
+earlier docs. No existing decision is reversed; the split policy, preprocessing, cache
+schema (v2), and failure policy are unchanged.
+**Options considered:** Only add tests; fix defects found by the tests with a regression
+test written first; or also redesign the failure policy (per-sample retry, catching all
+exceptions in the CLI).
+**Decision:** (1) `MVTecADDataset` raises `ValueError` for any split other than `train`
+or `test`. Before, an unknown split such as `"val"` fell through to the test-tree
+branch, and with `validate=False` returned official test images labelled `val`; a
+validation set must never be readable from `test/`. (2) `build_latent_cache` checks
+that every encoder output batch is finite and raises `CacheBuildError` before any shard
+of that batch is written. Before, `save_latent_cache` raised a bare `CacheMetadataError`
+partway through the batch, which the CLI did not catch (traceback, no summary). It now
+follows the existing wrong-shape policy: the CLI records the entry as failed and moves
+on; shards from earlier batches stay and are valid. (3) Confirmed, unchanged: duplicate
+image content inside `train/good` is rejected, not deduplicated (`duplicate image ID`),
+so one bad category stops that category's run. (4) Confirmed, unchanged: cache rows
+follow the order of the records passed in (split output is path-sorted), so the same
+images under different filenames give a different row order and are therefore rebuilt,
+never misread. (5) Reuse always re-runs record validation first; an existing cache never
+bypasses dataset or leakage checks.
+**Rationale:** Both defects were found by probing, then pinned by a failing regression
+test before the fix. The fixes are minimal and keep existing behaviour for valid input.
+**Baseline / prior state:** 118 tests passed; the two behaviours above were untested.
+**Outcome after change:** 137 tests pass on CPU: 18 in
+`tests/integration/test_pipeline_end_to_end.py` and 1 in `test_mvtec_dataset.py`. Covered:
+full pipeline with association checks, order/filename-independent split membership,
+duplicate and leaked images, reuse after dataset invalidation, global RNG and source
+files untouched, cache files moved across category/split, shards copied under another
+sample's name, failed atomic replace, truncated and tampered entries, reordered ids,
+changed dim/seed, repeat-run identity, batch-size tolerance. Synthetic data and a mock
+encoder only; no real MVTec, checkpoint, or GPU.

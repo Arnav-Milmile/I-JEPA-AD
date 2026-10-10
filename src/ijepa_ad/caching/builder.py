@@ -183,6 +183,11 @@ def build_latent_cache(
                 f"(N, {num_tokens if num_tokens is not None else 'any'}, "
                 f"{embedding_dim})"
             )
+        if not bool(torch.isfinite(latents).all()):
+            raise CacheBuildError(
+                f"encoder returned non-finite latents for a batch starting at "
+                f"{good[0].image_path.name}; nothing from this batch was saved"
+            )
         for row, record in enumerate(good):
             _save_shard(shard_root, record, latents[row : row + 1], expectations)
         encoded += len(good)

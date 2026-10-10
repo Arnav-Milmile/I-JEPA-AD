@@ -1,8 +1,8 @@
 # TRANSFER.md
-_Last updated: 2026-10-10, at commit 71d33be (branch `DataPipelineAndLatentCaching`) plus Phase 4 changes_
+_Last updated: 2026-10-10, branch `DataPipelineAndLatentCaching` at commit 1deb4a5 plus uncommitted Phase 5 changes_
 
 ## 1. One-paragraph project state
-The data path is implemented and verified on CPU with synthetic data: MVTec discovery and validation, a deterministic nominal-only train/validation split, and deterministic I-JEPA preprocessing to `N×3×224×224`. A versioned latent cache (`caching/cache_schema.py`, `caching/latent_cache.py`, schema v2) saves and loads encoder-shaped tensors with validated metadata, checksum, invalidation checks, atomic writes, and lookup by sample id. `caching/builder.py` generates it resumably, and (Phase 4) `caching/cli.py` exposes that as a command with a structured run summary. All of it is tested only with synthetic tensors and a mock encoder. The ViT-g/16 wrapper is tested only with a tiny stand-in model. The real checkpoint has never been loaded, the CUDA VRAM spike has not been run, and no real latent cache exists. The predictor, masking, baselines, and evaluation are not started.
+The data path is implemented and verified on CPU with synthetic data: MVTec discovery and validation, a deterministic nominal-only train/validation split, and deterministic I-JEPA preprocessing to `N×3×224×224`. A versioned latent cache (`caching/cache_schema.py`, `caching/latent_cache.py`, schema v2) saves and loads encoder-shaped tensors with validated metadata, checksum, invalidation checks, atomic writes, and lookup by sample id. `caching/builder.py` generates it resumably, and (Phase 4) `caching/cli.py` exposes that as a command with a structured run summary. Phase 5 validated the whole chain as one system (synthetic images, mock encoder, CPU) and fixed two defects. All of it is tested only with synthetic data and a mock encoder; real MVTec images were not available and were not tested. The ViT-g/16 wrapper is tested only with a tiny stand-in model. The real checkpoint has never been loaded, the CUDA VRAM spike has not been run, and no real latent cache exists. The predictor, masking, baselines, and evaluation are not started.
 
 ## 2. Phase checklist
 Mirrors `docs/IMPLEMENTATION_PLAN.md` §3.
@@ -16,12 +16,13 @@ Mirrors `docs/IMPLEMENTATION_PLAN.md` §3.
 - **Weeks 15–16, Paper Assets:** NOT STARTED. `REPRODUCIBILITY.md` covers source pin, checkpoint, preprocessing, and the cache-generation command.
 
 ## 3. What is verified working right now
-Verified on Windows, Python 3.12.10, torch 2.14.1+cpu, Pillow 12.3.0, in `.venv`, by running the commands in §5:
-- `pytest tests/unit tests/integration`: 118 passed. `ruff check .`, `black --check --workers 1 .` and `mypy src tests` (33 files) pass.
-- Phase 4 tests: 5 added to `tests/integration/test_latent_cache_pipeline.py` (recomputed-shard counting; failed-sample report attached to `CacheBuildError`; wrong token count / embedding dim rejected before anything is saved; metadata consistent with the run; `test` split built only from official test records and rejecting train records) and 11 in `tests/integration/test_cache_cli.py` (summary totals and mock labelling; nominal caches exclude all test ids and write no `test.pt`; a second run skips everything; resume after a crash encodes only missing samples; a corrupted shard is counted as recomputed; an unreadable image is reported while another category still builds; `--purpose test`; `--rebuild`; configuration errors raise before any encoding or directory creation; CLI JSON output, `--summary-json`, exit codes 0/1/2, required `--category`).
-- A mock CLI run on a synthetic tree (6 train images, 224px, batch 4) wrote a `[5, 196, 1408]` train entry under `<cache-root>/_mock`.
-- Earlier phases: cache unit tests (`test_latent_cache.py`, 40), builder integration tests (`test_latent_cache_pipeline.py`, 16 now), transforms (16), splits (12), MVTec dataset (9), seeding (6), wrapper (2), logging (2), profiling (2), scaffold (1), `test_data_pipeline.py` (1).
+Verified on Windows, Python 3.12.10, torch 2.14.1+cpu, Pillow 12.3.0, ruff 0.8.6, black 25.1.0, mypy 1.14.1, in `.venv`, by running the commands in §5 (all CPU, no network, no CUDA):
+- `pytest tests/unit tests/integration`: **137 passed** (118 before Phase 5). `ruff check .`: all checks passed. `black --check --workers 1 .`: 37 files unchanged. `mypy src tests`: no issues in 34 files.
+- Phase 5 (`tests/integration/test_pipeline_end_to_end.py`, 18 tests, plus 1 in `tests/unit/test_mvtec_dataset.py`) exercised these paths: dataset discovery → split → preprocessing → spy mock encoder → cache → reload (every latent compared with the mock encoder run on that sample's own image); a second run encodes nothing; split membership is identical for the same pixels under different filenames/orders; a within-train duplicate and a train/test copy are rejected before any encoding; an existing valid cache does not bypass a later-invalid dataset; global `random`/torch RNG state and source-file bytes/mtimes are unchanged by a full run; `train.pt` copied to `val.pt` or to another category is rejected and rebuilt; a shard copied under another sample's name is recomputed; a failed `os.replace` leaves no final entry and no temp file, and resume encodes only the missing rows; a truncated final entry is reported and left untouched; a checksum-failing tensor is rejected; reordered `sample_ids` in a self-consistent file are not trusted (rebuilt); NaN encoder output is a reported failure with nothing saved from that batch; a changed embedding dim or split seed rebuilds; two runs give bit-identical latents (same batch size) and batch size 1 vs 12 agrees within `atol=1e-4`.
+- Defects found and fixed (regression test first, see `DECISIONS.md`): (1) `MVTecADDataset(split="val")` silently read `test/`; it now raises `ValueError`. (2) Non-finite encoder output escaped the CLI as a raw `CacheMetadataError` traceback; it is now a `CacheBuildError` raised before any shard of the batch is saved.
+- Earlier phases (counts unchanged except MVTec dataset 9 → 10): cache unit tests 40, builder integration 16, CLI 11, transforms 16, splits 12, seeding 6, wrapper 2, logging 2, profiling 2, scaffold 1, `test_data_pipeline.py` 1.
 - Preprocessing constants were checked against Meta's `src/transforms.py` at the pinned commit `52c1ae95` (see `REPRODUCIBILITY.md`).
+- Real MVTec: `data/` does not exist on this machine, so the optional real-image smoke test was **not run**. Real checkpoint inference was **not performed**; the checkpoint was not downloaded or hashed.
 
 Not verified: real MVTec images, the real checkpoint (including hashing it), any GPU run, the CLI with `IJEPAEncoder`, a real cache for any category, CI on Linux/Python 3.11, atomic-write behavior under a real power loss, and a numeric cross-check against torchvision (not installed).
 
@@ -35,7 +36,8 @@ Not verified: real MVTec images, the real checkpoint (including hashing it), any
 - Mask preprocessing for evaluation: no transform resizes ground-truth masks to 224 yet (nearest-neighbor, consistent with the full-image resize).
 - Hydra/OmegaConf config loading (`latent_cache.root` and `encoder_name` are mirrored as CLI defaults only).
 - Predictor, losses, training loop, masking engine, baselines, metrics, efficiency logging, statistical tests, run manifests, and `scripts/` entrypoints other than the VRAM spike and `build_latent_cache.py`.
-- Regression tests. Integration tests cover only the data and cache pipelines.
+- Real-data validation: nothing above has seen a real MVTec image. A real category could contain duplicate `train/good` images (rejected by design), unusual image modes, or very large files; run `validate_mvtec.py` and the mock CLI on it first.
+- Run-to-run behaviour of the real encoder (GPU kernels, dtype, batch size) is unmeasured; only the mock encoder's determinism is verified.
 
 ## 5. Environment & reproduction
 ```bash
@@ -47,8 +49,11 @@ python -m venv .venv
 ./.venv/Scripts/mypy.exe src tests
 ./.venv/Scripts/python.exe -m pytest tests/unit tests/integration
 ./.venv/Scripts/python.exe -m pytest tests/integration/test_cache_cli.py   # Phase 4 only
+./.venv/Scripts/python.exe -m pytest tests/integration/test_pipeline_end_to_end.py   # Phase 5 only
 ```
 On Linux, use `.venv/bin/...`. CI uses Python 3.11, and this machine ran 3.12.
+
+Phase 5 files: new `tests/integration/test_pipeline_end_to_end.py`; modified `src/ijepa_ad/data/mvtec_dataset.py` (split-name check), `src/ijepa_ad/caching/builder.py` (finite-latents check), `tests/unit/test_mvtec_dataset.py`, and the four docs.
 
 Phase 4 files: new `src/ijepa_ad/caching/cli.py`, `scripts/build_latent_cache.py`, `tests/integration/test_cache_cli.py`; modified `src/ijepa_ad/caching/builder.py` (`BuildReport.recomputed/failed`, `CacheBuildError.report`, `num_tokens` check, `_shard_is_valid`), `tests/integration/test_latent_cache_pipeline.py`, and the four docs.
 
@@ -81,6 +86,9 @@ Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/
 - **Stale configs:** `configs/encoder/vitb16.yaml` and `vitl16.yaml` remain from the pre-ViT-g plan.
 - **Stray file:** `.validate_mvtec.py.swp`, a vim swap file, is tracked in git and should be untracked.
 - **Wrong filename references:** `DECISIONS.md` and `FLOW.md` headers reference `CLAUDE.md`, but the governing file is `AGENT.md`.
+- **Tracked swap file:** `.validate_mvtec.py.swp` is still tracked (pre-existing); Phase 5 did not touch it.
+- **Dataset duplicates stop a category:** identical bytes inside `train/good` raise `DatasetValidationError` (no dedup). By design; unverified against real MVTec.
+- **Other exception types:** an exception other than `CacheError`/`DatasetValidationError`/`FileNotFoundError` (e.g. Pillow's `DecompressionBombError` on a huge image, or an encoder crash) still propagates from the CLI as a traceback; finished shards are kept and a rerun resumes.
 - **Loader leniency:** a mask under `ground_truth/good/` and orphan masks with no matching image are ignored, not rejected.
 - **Checkpoint hash cost:** `compute_file_sha256` reads the whole multi-GB checkpoint; the CLI does it once per run.
 - **Sample ids and corrupt images:** an id is the SHA-256 of file content, so replacing an image's bytes changes its id; a run re-discovers files each time.
@@ -92,4 +100,4 @@ Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/
 - CUDA steps: `docs/ENCODER_VITG16_CUDA_RUNBOOK.md`.
 
 ## 8. Immediate next step
-On the GPU host: follow the runbook to load the real checkpoint and run the VRAM spike, then run `python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda` (and `--purpose test`), confirm the summary reports `encoder_kind: "real"` and `[N, 196, 1408]` entries, and reload one entry with `load_latent_cache`. Before that, on CPU, run `python validate_mvtec.py data/raw/mvtec_ad` on the real dataset. The predictor (Phase 5) reads only from the cache.
+On the GPU host: follow the runbook to load the real checkpoint and run the VRAM spike, then run `python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda` (and `--purpose test`), confirm the summary reports `encoder_kind: "real"` and `[N, 196, 1408]` entries, and reload one entry with `load_latent_cache`. Before that, on CPU, run `python validate_mvtec.py data/raw/mvtec_ad` on the real dataset. The predictor reads only from the cache.

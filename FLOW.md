@@ -1,12 +1,13 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 4 cache-generation CLI and run summary added._
+_Last reviewed against src/: 2026-10-10 — Phase 5 end-to-end validation (two fixes, see DECISIONS.md)._
 
 ## 1. High-Level Design
-The data path is implemented through latent caching (generation, resume, lookup),
-tested with a mock encoder. Predictor, masking, baselines, and evaluation
-packages are still empty.
+The data path is implemented through latent caching (generation, resume, lookup) and
+validated end to end on synthetic data with a mock encoder (Phase 5). **Not
+implemented:** the predictor, masking, baselines, and evaluation packages (empty); the
+real encoder has never run on real weights or images.
 
 ```text
 <root>/<category>/{train,test,ground_truth}
@@ -55,6 +56,8 @@ have the corresponding official mask at
 SHA-256 digest of file content, which catches copied images even when MVTec
 filenames repeat across its official train and test directories. The split validator
 rejects duplicate IDs within a split and any ID shared across train and test.
+`MVTecADDataset` accepts only `split` `train` or `test` (anything else raises
+`ValueError`).
 
 The predictor's validation set is a nominal-only holdout carved from the official
 training records by `data.splits`; the official test split is never read or
@@ -218,6 +221,15 @@ The CLI performs the same flow per category: `validate_category_splits`, then fo
 that cannot be read, and entries that are unusable (e.g. a corrupted final file), are
 recorded in the summary and the run moves on. An exception from the encoder aborts the
 run (finished shards are kept; rerun to resume). Only the mock encoder has been run.
+
+Every entry point re-validates records before looking at the cache: `build_latent_cache`
+calls `validate_training_records` / `validate_test_records` first, and the CLI calls
+`validate_category_splits` first, so an existing cache never bypasses dataset or leakage
+checks. Reuse then requires an exact match of the metadata (see Invalidation); a cache
+file copied to another category or split, or a shard copied under another sample's
+name, is incompatible and is rebuilt. Each encoder output batch must have the right
+rows/tokens/dim and be finite before any of its shards are written (`CacheBuildError`).
+Row order in an entry is the order of the records given (split output is path-sorted).
 
 Test defects remain evaluation-only and never participate in model selection.
 
