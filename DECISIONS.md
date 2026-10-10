@@ -290,3 +290,36 @@ files untouched, cache files moved across category/split, shards copied under an
 sample's name, failed atomic replace, truncated and tampered entries, reordered ids,
 changed dim/seed, repeat-run identity, batch-size tolerance. Synthetic data and a mock
 encoder only; no real MVTec, checkpoint, or GPU.
+
+## [2026-10-10] Phase 6 handoff: document and test the existing cache API, no new format
+**Context:** Person 2 needs to read cached embeddings without knowing the data
+pipeline. Checked against the code: `load_latent_cache`, `CacheExpectations` and
+`LatentCache` already give one validated consumption path, and `predictor/` is empty, so
+Person 2's actual interface is not in the repository.
+**Options considered:** Add a facade or re-exports in `caching/__init__.py`; add a
+consumer-specific loader (dataset-style, batching, label join); or document the existing
+API and pin it with a stand-in-consumer test.
+**Decision:** Change no source. Document the contract in `FLOW.md` (what the consumer
+provides, one sample `[196, 1408]` via `get` versus a batch `[N, 196, 1408]` via
+`select` or `.latents`, the error or status for each failure, labels not cached) and add
+`tests/integration/test_person2_cache_consumer.py` (13 tests). Add
+`docs/GPU_VALIDATION_CHECKLIST.md`, an unexecuted procedure for the GPU host. These are
+**proposals needing Person 2's agreement, not decisions**: re-export the consumer names
+from `ijepa_ad.caching`; a helper that builds `CacheExpectations` from a run's summary
+JSON so consumers need not repeat encoder name and hash; a storage-dtype option for the
+CLI once float16 versus float32 has been measured.
+**Rationale:** The API already satisfies the contract, and a second loader would
+duplicate validation that must not be bypassed. Re-exports and helpers are cheap to add
+once the consumer's needs are known and awkward to remove once relied on.
+**Baseline / prior state:** 137 tests; the contract was implicit in `FLOW.md` §2/§3 and
+in test code; single versus batch return shapes and the absence of labels in the cache
+were not stated.
+**Outcome after change:** 150 tests pass on CPU. Verified with synthetic data, the mock
+encoder and a stand-in consumer: shape/dtype/metadata round trip, id-to-latent
+association against an independent re-encode, train/val/test separation, ten kinds of
+incompatibility rejected, missing and corrupted entries, unsafe names, and the
+`[N, 196, 1408]` geometry (mock latents). No defect was found in the cache or split
+code. Not verified: Person 2's code, the real checkpoint, GPU, real MVTec. Noted for the
+GPU host: `IJEPAEncoder._load_checkpoint` uses torch's default `weights_only` (the
+runbook and spike pass `False`); not changed because it cannot be tested without the
+checkpoint.

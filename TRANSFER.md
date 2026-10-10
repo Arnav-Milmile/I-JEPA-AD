@@ -1,5 +1,5 @@
 # TRANSFER.md
-_Last updated: 2026-10-10, branch `DataPipelineAndLatentCaching` at commit 1deb4a5 plus uncommitted Phase 5 changes_
+_Last updated: 2026-10-10, branch `DataPipelineAndLatentCaching` at commit 4d05da4 (Phase 5, committed) plus uncommitted Phase 6 handoff changes (docs and one new test file)_
 
 ## 1. One-paragraph project state
 The data path is implemented and verified on CPU with synthetic data: MVTec discovery and validation, a deterministic nominal-only train/validation split, and deterministic I-JEPA preprocessing to `N×3×224×224`. A versioned latent cache (`caching/cache_schema.py`, `caching/latent_cache.py`, schema v2) saves and loads encoder-shaped tensors with validated metadata, checksum, invalidation checks, atomic writes, and lookup by sample id. `caching/builder.py` generates it resumably, and (Phase 4) `caching/cli.py` exposes that as a command with a structured run summary. Phase 5 validated the whole chain as one system (synthetic images, mock encoder, CPU) and fixed two defects. All of it is tested only with synthetic data and a mock encoder; real MVTec images were not available and were not tested. The ViT-g/16 wrapper is tested only with a tiny stand-in model. The real checkpoint has never been loaded, the CUDA VRAM spike has not been run, and no real latent cache exists. The predictor, masking, baselines, and evaluation are not started.
@@ -17,7 +17,9 @@ Mirrors `docs/IMPLEMENTATION_PLAN.md` §3.
 
 ## 3. What is verified working right now
 Verified on Windows, Python 3.12.10, torch 2.14.1+cpu, Pillow 12.3.0, ruff 0.8.6, black 25.1.0, mypy 1.14.1, in `.venv`, by running the commands in §5 (all CPU, no network, no CUDA):
-- `pytest tests/unit tests/integration`: **137 passed** (118 before Phase 5). `ruff check .`: all checks passed. `black --check --workers 1 .`: 37 files unchanged. `mypy src tests`: no issues in 34 files.
+- Phase 6 re-run: `pytest tests/unit tests/integration`: **150 passed** (137 + 13 new in `tests/integration/test_person2_cache_consumer.py`). `ruff check .`: all checks passed. `black --check --workers 1 .`: 38 files unchanged. `mypy src tests`: no issues in 35 source files. No source file changed in Phase 6.
+- **Consuming the cache (Person 2):** see `FLOW.md`, "Downstream consumption contract". In short: `load_latent_cache(latent_cache_path(root, category, split), CacheExpectations(...))` returns a `LatentCache`; `.latents` is `[N, 196, 1408]`, `.get(image_id)` is one sample `[196, 1408]`, `.select(ids)` a batch, `.metadata.sample_ids` the row order; labels and masks are not cached. The 13 Phase 6 tests exercise this with a stand-in consumer (association against an independent re-encode, train/val/test separation, incompatibility, missing and corrupt entries). Person 2's real code does not exist in the repo, so integration with it is **unverified**; the re-export/helper/dtype-option ideas in `DECISIONS.md` (Phase 6) are proposals awaiting their agreement.
+- Earlier verified state (Phase 5): 137 passed, 37 files black-clean, mypy 34 files.
 - Phase 5 (`tests/integration/test_pipeline_end_to_end.py`, 18 tests, plus 1 in `tests/unit/test_mvtec_dataset.py`) exercised these paths: dataset discovery → split → preprocessing → spy mock encoder → cache → reload (every latent compared with the mock encoder run on that sample's own image); a second run encodes nothing; split membership is identical for the same pixels under different filenames/orders; a within-train duplicate and a train/test copy are rejected before any encoding; an existing valid cache does not bypass a later-invalid dataset; global `random`/torch RNG state and source-file bytes/mtimes are unchanged by a full run; `train.pt` copied to `val.pt` or to another category is rejected and rebuilt; a shard copied under another sample's name is recomputed; a failed `os.replace` leaves no final entry and no temp file, and resume encodes only the missing rows; a truncated final entry is reported and left untouched; a checksum-failing tensor is rejected; reordered `sample_ids` in a self-consistent file are not trusted (rebuilt); NaN encoder output is a reported failure with nothing saved from that batch; a changed embedding dim or split seed rebuilds; two runs give bit-identical latents (same batch size) and batch size 1 vs 12 agrees within `atol=1e-4`.
 - Defects found and fixed (regression test first, see `DECISIONS.md`): (1) `MVTecADDataset(split="val")` silently read `test/`; it now raises `ValueError`. (2) Non-finite encoder output escaped the CLI as a raw `CacheMetadataError` traceback; it is now a `CacheBuildError` raised before any shard of the batch is saved.
 - Earlier phases (counts unchanged except MVTec dataset 9 → 10): cache unit tests 40, builder integration 16, CLI 11, transforms 16, splits 12, seeding 6, wrapper 2, logging 2, profiling 2, scaffold 1, `test_data_pipeline.py` 1.
@@ -53,6 +55,8 @@ python -m venv .venv
 ```
 On Linux, use `.venv/bin/...`. CI uses Python 3.11, and this machine ran 3.12.
 
+Phase 6 files: new `tests/integration/test_person2_cache_consumer.py` and `docs/GPU_VALIDATION_CHECKLIST.md`; edited `DECISIONS.md`, `FLOW.md`, `REPRODUCIBILITY.md`, `TRANSFER.md`. Not committed.
+
 Phase 5 files: new `tests/integration/test_pipeline_end_to_end.py`; modified `src/ijepa_ad/data/mvtec_dataset.py` (split-name check), `src/ijepa_ad/caching/builder.py` (finite-latents check), `tests/unit/test_mvtec_dataset.py`, and the four docs.
 
 Phase 4 files: new `src/ijepa_ad/caching/cli.py`, `scripts/build_latent_cache.py`, `tests/integration/test_cache_cli.py`; modified `src/ijepa_ad/caching/builder.py` (`BuildReport.recomputed/failed`, `CacheBuildError.report`, `num_tokens` check, `_shard_is_valid`), `tests/integration/test_latent_cache_pipeline.py`, and the four docs.
@@ -77,7 +81,7 @@ Local-only state that is not committed:
 - MVTec AD under `data/raw/mvtec_ad` (the root-level `/data/` is gitignored). Validate it with `python validate_mvtec.py data/raw/mvtec_ad`.
 - Latent caches under `data/cache/latents/` (also covered by `/data/`). None exist yet; they are to be generated on a GPU host.
 
-Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/I-JEPA-AD`. Branch `DataPipelineAndLatentCaching` is pushed to `origin` at `71d33be`.
+Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/I-JEPA-AD`. Branch `DataPipelineAndLatentCaching` tracks `origin/DataPipelineAndLatentCaching`, at `4d05da4` (no ahead/behind marker in `git branch -vv`, as of the last fetch; Phase 6 changes are local only).
 
 ## 6. Known issues / open threads
 - **mypy and numpy on Python 3.12:** numpy 2.5.x stubs use 3.12-only `type` syntax, which mypy rejects with `python_version = "3.11"` once any checked module imports numpy directly. Cache and CLI modules avoid importing numpy directly.
@@ -100,4 +104,4 @@ Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/
 - CUDA steps: `docs/ENCODER_VITG16_CUDA_RUNBOOK.md`.
 
 ## 8. Immediate next step
-On the GPU host: follow the runbook to load the real checkpoint and run the VRAM spike, then run `python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda` (and `--purpose test`), confirm the summary reports `encoder_kind: "real"` and `[N, 196, 1408]` entries, and reload one entry with `load_latent_cache`. Before that, on CPU, run `python validate_mvtec.py data/raw/mvtec_ad` on the real dataset. The predictor reads only from the cache.
+On the GPU host: follow `docs/GPU_VALIDATION_CHECKLIST.md` (not yet executed; it also lists the results to record), which wraps the steps below. In particular check that `IJEPAEncoder` can load the real checkpoint with torch's default `weights_only`. Details: follow the runbook to load the real checkpoint and run the VRAM spike, then run `python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda` (and `--purpose test`), confirm the summary reports `encoder_kind: "real"` and `[N, 196, 1408]` entries, and reload one entry with `load_latent_cache`. Before that, on CPU, run `python validate_mvtec.py data/raw/mvtec_ad` on the real dataset. The predictor reads only from the cache.
