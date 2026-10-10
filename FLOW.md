@@ -1,22 +1,29 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-08-20 — foundational utilities added._
+_Last reviewed against src/: 2026-10-10 — Phase 1 preprocessing and nominal split added._
 
 ## 1. High-Level Design
-The current scaffold contains package boundaries only; no runtime data flow or
-modeling modules exist yet.
+The data path is implemented up to the frozen encoder's input. Caching, predictor,
+masking, baselines, and evaluation packages are still empty.
 
 ```text
-configs/ ──> future scripts/ ──> src/ijepa_ad/
-                              ├── data
-                              ├── encoder
-                              ├── caching
-                              ├── predictor
-                              ├── masking
-                              ├── baselines
-                              ├── evaluation
-                              └── utils
+<root>/<category>/{train,test,ground_truth}
+        │
+        ▼
+data.mvtec_dataset.MVTecADDataset ──> data.validators (labels, masks, leakage)
+        │  tuple[MVTecSample]   (path metadata only, no pixels)
+        ▼
+data.splits.split_nominal_train_val ──> NominalSplit(train, val)   [train/good only]
+        │  image paths
+        ▼
+data.transforms.preprocess_batch ──> Tensor[N, 3, 224, 224]  (I-JEPA normalized)
+        │
+        ▼
+encoder.ijepa_wrapper.IJEPAEncoder.encode ──> Tensor[N, 196, 1408]  (frozen)
+        │
+        ▼
+caching / predictor / masking / baselines / evaluation   — not implemented
 ```
 
 The `utils` package now provides cross-cutting controls used by every future
@@ -40,12 +47,21 @@ SHA-256 digest of file content, which catches copied images even when MVTec
 filenames repeat across its official train and test directories. The split validator
 rejects duplicate IDs within a split and any ID shared across train and test.
 
+The predictor's validation set is a nominal-only holdout carved from the official
+training records by `data.splits`; the official test split is never read or
+modified by splitting. `data.transforms` turns any split's image paths into
+encoder-ready tensors with one deterministic transform for train, validation, and
+test: RGB conversion, full-image bilinear resize to 224×224 (no crop), `[0, 1]`
+scaling, and the official I-JEPA ImageNet normalization.
+
 ## 2. Low-Level Design
 Foundational utility interfaces:
 
 - [`seeding.py`](src/ijepa_ad/utils/seeding.py): `set_seed(seed: int) -> None`
   seeds Python, NumPy, PyTorch, and CUDA and enables deterministic PyTorch
-  algorithms.
+  algorithms. `seeded_rng(seed: int) -> random.Random` returns an isolated RNG
+  with the same seed validation, for library code that must be deterministic
+  without touching global state.
 - [`logging_setup.py`](src/ijepa_ad/utils/logging_setup.py):
   `setup_logging(level, log_file, logger_name) -> logging.Logger` configures
   idempotent stream/file JSON logging.
@@ -54,8 +70,12 @@ Foundational utility interfaces:
   reads `torch.cuda.max_memory_allocated()` on CUDA hosts and safely reports zero
   on CPU-only hosts.
 
-All remaining package modules are still empty. Configuration files are placeholders
-for the Hydra/OmegaConf work planned in the next phase.
+Caching, predictor, masking, baselines, and evaluation packages are still empty.
+Hydra/OmegaConf is not wired in: `configs/data/mvtec.yaml` records `root`,
+`pilot_categories`, `preprocessing.{image_size, resize, mean, std}`, and
+`nominal_split.{val_fraction, seed, min_train, min_val}`, but no code loads it yet.
+Its values mirror `PreprocessConfig` defaults and the arguments callers must pass to
+`split_nominal_train_val`.
 
 Data interfaces:
 
@@ -67,6 +87,21 @@ Data interfaces:
   `validate_training_records()`, `validate_test_records()`, and
   `validate_no_split_leakage()` enforce nominal-only training, official mask/label
   pairing, and no cross-split image IDs.
+- [`splits.py`](src/ijepa_ad/data/splits.py):
+  `split_nominal_train_val(samples, *, val_fraction, seed, min_train=1, min_val=1)
+  -> NominalSplit` runs `validate_training_records()`, orders records by SHA-256
+  `image_id`, shuffles with `seeded_rng(seed)`, and holds out
+  `round(n * val_fraction)` records as validation. It raises
+  `InsufficientNominalSamplesError` (a `DatasetValidationError`) when either side
+  would fall below its minimum. `NominalSplit(train, val, seed, val_fraction)` is
+  frozen, with both tuples sorted by image path.
+- [`transforms.py`](src/ijepa_ad/data/transforms.py):
+  `PreprocessConfig(image_size=224, mean=IJEPA_MEAN, std=IJEPA_STD)`,
+  `load_image(path)`, `to_rgb(image)`, `preprocess_image(path | PIL.Image, config)
+  -> Tensor[3, S, S]`, and `preprocess_batch(images, config) -> Tensor[N, 3, S, S]`.
+  Grayscale is replicated to three channels, images with transparency are
+  alpha-composited onto black, and 16-bit or float modes raise
+  `ImagePreprocessingError` instead of being clipped.
 
 Encoder interface:
 
@@ -82,8 +117,15 @@ Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime
 blocks can be wrapped as `with profile_peak_vram("stage"):` and all run output is
 sent through the logger returned by `setup_logging()`.
 
-The future predictor validation split must be carved from nominal training records
-only; test defects remain evaluation-only and never participate in model selection.
+Implemented data flow for one category (verified on synthetic data in
+`tests/integration/test_data_pipeline.py` with a stub encoder):
+
+1. `train, test = validate_category_splits(root, category)`
+2. `split = split_nominal_train_val(train, val_fraction=0.1, seed=0)`
+3. `batch = preprocess_batch([sample.image_path for sample in split.train])`
+4. `latents = IJEPAEncoder(...).encode(batch)` → `[N, 196, 1408]`
+
+Test defects remain evaluation-only and never participate in model selection.
 
 For training-time caching, nominal images flow through `IJEPAEncoder.encode()` once
 and produce `[N, 196, 1408]` latent tensors. The first ViT-g/16 run must use batch
@@ -95,3 +137,8 @@ The initial scaffold uses `requirements-lock.txt` as the permitted lockfile vari
 from §1 and keeps modeling dependencies empty. Foundational utilities use lazy
 PyTorch loading so CPU-only tooling remains importable. See `DECISIONS.md`,
 2026-08-20.
+
+The official I-JEPA repository has only a training transform (`RandomResizedCrop`).
+Preprocessing here uses a deterministic full-image resize instead, so no border
+region is cropped away. See `DECISIONS.md`, 2026-10-10 "Deterministic I-JEPA
+preprocessing".

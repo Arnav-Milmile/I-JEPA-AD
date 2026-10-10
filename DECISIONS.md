@@ -78,3 +78,55 @@ official ViT-B/16 checkpoint.
 **Outcome after change:** The project configuration and wrapper contract now target
 ViT-g/16; production construction remains pending a local checkout of Meta's
 archived source repository and a memory smoke test.
+
+## [2026-10-10] Deterministic I-JEPA preprocessing
+**Context:** Phase 1 needs one preprocessing path that turns MVTec images into
+`N×3×224×224` tensors for the frozen ViT-g/16 encoder.
+**Options considered:** Reuse Meta's training transform (`RandomResizedCrop`,
+scale 0.3–1.0); `Resize(256)` + `CenterCrop(224)` as in many ImageNet eval and
+PatchCore setups; or a direct full-image resize to 224×224.
+**Decision:** Decode with Pillow, convert to RGB, bilinear-resize the full image to
+224×224 with no crop, scale to `[0, 1]`, then normalize with mean
+`(0.485, 0.456, 0.406)` and std `(0.229, 0.224, 0.225)`. Use the same transform for
+train, validation, and test. Grayscale is replicated to 3 channels; images with
+transparency are alpha-composited onto black; 16-bit and float modes are rejected.
+Implemented in `src/ijepa_ad/data/transforms.py`.
+**Rationale:** Normalization, `[0, 1]` scaling, 224px size, and bilinear interpolation
+are verified against Meta's official `facebookresearch/ijepa` `src/transforms.py`
+(`make_transforms` defaults) and `configs/in22k_vitg16_ep44.yaml` (flip, color
+distortion, and blur all disabled). The official repo ships no deterministic eval
+transform, so the resize policy is a project choice: random crops would make
+anomaly scores non-deterministic, and center-cropping would discard border regions
+where MVTec defects can occur.
+**Baseline / prior state:** No preprocessing existed; `MVTecADDataset` returns path
+metadata only.
+**Outcome after change:** 16 unit tests cover shapes, dtype, exact normalized values,
+grayscale, RGBA, palette transparency, no-crop borders, determinism, and error paths.
+Not numerically cross-checked against torchvision (not installed). Pillow added as a
+runtime dependency because torch alone cannot decode PNG/JPEG.
+
+## [2026-10-10] Nominal-only train/validation split
+**Context:** Predictor training needs a validation set for early stopping that never
+contains defect images (IMPLEMENTATION_PLAN §3 Weeks 5–6, §5).
+**Options considered:** Use `set_seed()` plus global `random.shuffle`; shuffle in
+filesystem order with a local RNG; or sort by content hash and shuffle with an
+isolated seeded RNG.
+**Decision:** `split_nominal_train_val(samples, *, val_fraction, seed, min_train=1,
+min_val=1)` in `src/ijepa_ad/data/splits.py`. It accepts only records that pass
+`validate_training_records`, holds out `round(n * val_fraction)` samples (ties to
+even), orders by SHA-256 `image_id` before shuffling with
+`ijepa_ad.utils.seeding.seeded_rng(seed)`, and raises
+`InsufficientNominalSamplesError` when either side would fall below its minimum.
+`seeded_rng` is a new public helper sharing `set_seed`'s seed validation.
+**Rationale:** Calling `set_seed()` inside a data function would reset the caller's
+global RNG and torch determinism flags as a side effect. Ordering by content hash
+makes the split depend only on image content and seed, not on paths or directory
+listing order. Reusing the training validator guarantees no defect, masked, or
+test-split record can enter train or validation.
+**Baseline / prior state:** No validation split existed; the 2026-08-20 entry
+reserved it as future nominal-only holdout work.
+**Outcome after change:** 12 unit tests cover nominal-only output, disjointness,
+completeness, seed reproducibility, input-order independence, global-state
+isolation, rejection of defect/masked/test records, insufficient-sample errors, and
+invalid arguments. Default `val_fraction: 0.1`, `seed: 0` recorded in
+`configs/data/mvtec.yaml`.

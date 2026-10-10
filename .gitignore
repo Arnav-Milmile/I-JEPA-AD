@@ -8,6 +8,6 @@ __pycache__/
 
 results/*
 !results/.gitkeep
-data/
+/data/
 checkpoints/
 external/ijepa

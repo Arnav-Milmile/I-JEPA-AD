@@ -11,6 +11,15 @@
 The repository is archived/read-only. The commit SHA above pins the exact source
 used by `scripts/spikes/check_encoder_vram.py` and the production encoder wrapper.
 
+## Image preprocessing
+
+`src/ijepa_ad/data/transforms.py` matches `src/transforms.py` at the commit above:
+`ToTensor()` scaling to `[0, 1]`, then `Normalize` with mean
+`(0.485, 0.456, 0.406)` and std `(0.229, 0.224, 0.225)`, at 224px with bilinear
+interpolation. The official random crop is replaced by a deterministic full-image
+resize (see `DECISIONS.md`, 2026-10-10). Requires Pillow (`pillow==12.3.0` in
+`requirements-lock.txt`).
+
 ## Official checkpoint
 
 - URL: https://dl.fbaipublicfiles.com/ijepa/IN22K-vit.g.16-600e.pth.tar
