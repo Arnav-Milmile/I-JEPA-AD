@@ -56,7 +56,7 @@ class IJEPAEncoder(nn.Module):
             )
 
         self.model.to(device)
-        self.model.eval()
+        self.eval()
         for parameter in self.model.parameters():
             parameter.requires_grad_(False)
         self._assert_frozen()

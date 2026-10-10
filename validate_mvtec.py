@@ -6,9 +6,23 @@ import sys
 from pathlib import Path
 
 EXPECTED_CATEGORIES = {
-    "bottle", "cable", "capsule", "carpet", "grid", "hazelnut", "leather",
-    "metal_nut", "pill", "screw", "tile", "toothbrush", "transistor", "wood", "zipper",
+    "bottle",
+    "cable",
+    "capsule",
+    "carpet",
+    "grid",
+    "hazelnut",
+    "leather",
+    "metal_nut",
+    "pill",
+    "screw",
+    "tile",
+    "toothbrush",
+    "transistor",
+    "wood",
+    "zipper",
 }
+
 
 def check_category(cat_dir: Path) -> list[str]:
     problems = []
@@ -36,13 +50,18 @@ def check_category(cat_dir: Path) -> list[str]:
             continue  # nominal test images — no ground truth expected
         gt_subdir = gt_dir / defect_type
         if not gt_subdir.is_dir():
-            problems.append(f"[{cat_dir.name}] no ground_truth/{defect_type}/ for test images")
+            problems.append(
+                f"[{cat_dir.name}] no ground_truth/{defect_type}/ for test images"
+            )
             continue
         for img in images:
             expected_mask = gt_subdir / f"{img.stem}_mask.png"
             if not expected_mask.exists():
-                problems.append(f"[{cat_dir.name}] missing mask for test/{defect_type}/{img.name}")
+                problems.append(
+                    f"[{cat_dir.name}] missing mask for test/{defect_type}/{img.name}"
+                )
     return problems
+
 
 def main(root: str):
     root_path = Path(root)
@@ -72,8 +91,11 @@ def main(root: str):
             print(f"  ... and {len(all_problems) - 50} more")
         sys.exit(1)
     else:
-        print("\nAll checked categories look structurally correct "
-              "(train/good present, every defect image has a matching ground-truth mask).")
+        print(
+            "\nAll checked categories look structurally correct "
+            "(train/good present, every defect image has a matching ground-truth mask)."
+        )
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
