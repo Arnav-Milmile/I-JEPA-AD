@@ -1,7 +1,7 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
 _This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 5 end-to-end validation (two fixes, see DECISIONS.md)._
+_Last reviewed against src/: 2026-10-10 — Phase 6 handoff (consumption contract documented and tested; no source change)._
 
 ## 1. High-Level Design
 The data path is implemented through latent caching (generation, resume, lookup) and
@@ -186,6 +186,57 @@ name, checkpoint hash, patch size, embedding dim, and the full preprocessing spe
 `CacheExpectations`. Otherwise `CacheIncompatibleError`; `try_load_latent_cache`
 returns `None` so the caller rebuilds. A checksum, shape, dtype, or metadata failure
 is `CacheCorruptedError` and is never swallowed.
+
+### Downstream consumption contract (Person 2)
+
+Status: **implemented and tested by Person 1**
+(`tests/integration/test_person2_cache_consumer.py`, with a stand-in consumer).
+Person 2's predictor does not exist in this repository, so integration with their code
+is **not verified**. `caching/__init__.py` re-exports nothing; import from the
+submodules named below (`cache_schema`, `latent_cache`; the data-side names from
+`data.transforms`).
+
+What a consumer provides: the cache root, a category, a split (`train`, `val` or
+`test`), and a `CacheExpectations` describing the run that produced the entry
+(`encoder_name`, `checkpoint_sha256`, `patch_size`, `embedding_dim`, `preprocessing`
+via `PreprocessingSpec.from_config(PreprocessConfig())`, optionally the ordered
+`sample_ids`). For the real encoder these are `ijepa_vit_g16_in22k_ep44`, the
+checkpoint hash recorded in the run's summary JSON, 16, 1408, and the default
+`PreprocessConfig`. Pass `sample_ids` when exact membership and order matter.
+
+```python
+path = latent_cache_path(cache_root, "bottle", "train")      # <root>/<cat>/<split>.pt
+cache = load_latent_cache(path, expected)                    # -> LatentCache (CPU)
+cache.latents          # Tensor[N, 196, 1408]   the whole entry (a batch of N)
+cache.metadata         # CacheMetadata: category, split, sample_ids, dtype, hashes
+cache.get(image_id)    # Tensor[196, 1408]      ONE sample, no batch dimension
+cache.select(ids)      # Tensor[len(ids), 196, 1408]   a batch, in the order asked
+cache.index_of(id)     # row number;  `id in cache` -> bool
+```
+
+- Sample identity: `image_id`, the SHA-256 of the image bytes (the same value as
+  `MVTecSample.image_id`). Row `i` of `latents` belongs to `metadata.sample_ids[i]`.
+- Category and split live in the metadata and the path, and `expected` is compared with
+  the metadata, so a file renamed into another category/split is
+  `CacheIncompatibleError`. `train`/`val` come from the nominal split of `train/good`;
+  `test` is the official test set from a separate run (`--purpose test`).
+- Labels and masks are **not** in the cache. For `test`, join `image_id` to
+  `MVTecSample.label`/`mask_path` from `validate_category_splits`.
+- Dtype and device: the dtype the encoder returned at build time
+  (`metadata.latent_dtype`; production dtype undecided), loaded on CPU. Move or cast in
+  the consumer. `select` returns a copy; `get` and `.latents` share memory with the
+  loaded object, so treat them as read-only or `.clone()`. In-memory edits never reach
+  the file.
+- Outcomes: missing file → `CacheNotFoundError` (also a `FileNotFoundError`) from
+  `load_latent_cache`, `None` from `try_load_latent_cache`, `False` from `cache_exists`.
+  Built for another configuration or schema → `CacheIncompatibleError` (`None`/`False`
+  from the soft variants). Truncated, tampered, or inconsistent → `CacheCorruptedError`,
+  which the soft variants also raise. Unknown sample id → `KeyError`. Unsafe
+  category/split name → `ValueError`. `load_latent_cache(path)` without `expected` still
+  validates the file but cannot know it is the right one; pass `expected` whenever
+  latents are reused.
+- Consumers never need the `.<split>.parts/` shards (removed once an entry is complete),
+  the preprocessing code, or the encoder.
 
 ## 3. Runtime Flow
 Before training or inference, an entrypoint calls `set_seed(seed)` once. Runtime

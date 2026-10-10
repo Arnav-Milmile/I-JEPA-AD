@@ -143,3 +143,28 @@ Unverified on external GPU hardware: checkpoint load and hashing, the VRAM spike
 `IJEPAEncoder` inside the CLI (`_load_real_encoder`, device adapter), real
 `[N, 196, 1408]` caches, float16 vs float32 storage, real-MVTec behaviour (including
 whether any category has duplicate training images), and CI on Linux/Python 3.11.
+
+## Phase 6 handoff: CPU commands and GPU validation
+
+CPU commands (dev environment from `TRANSFER.md` §5):
+
+```bash
+./.venv/Scripts/python.exe -m pytest tests/integration/test_person2_cache_consumer.py -q  # 13 passed
+./.venv/Scripts/python.exe -m pytest tests/unit tests/integration -q                      # 150 passed
+./.venv/Scripts/ruff.exe check .
+./.venv/Scripts/black.exe --check --workers 1 .
+./.venv/Scripts/mypy.exe src tests
+```
+
+What a downstream reader provides and receives: `FLOW.md`, "Downstream consumption
+contract". It is tested with a stand-in consumer, not with Person 2's code.
+
+External GPU procedure: [`docs/GPU_VALIDATION_CHECKLIST.md`](docs/GPU_VALIDATION_CHECKLIST.md)
+covers the environment, checkpoint hashing (`sha256sum` and `compute_file_sha256` must
+agree), the encoder smoke test with peak memory, real-dataset checks, a pilot cache
+(`python -m ijepa_ad.caching.cli --category bottle --device cuda --batch-size 4
+--summary-json results/pilot_nominal.json`), interrupt/resume, batch-size and
+float16/float32 comparisons, and a results table. **It has not been executed.** The
+checkpoint hash, GPU memory, real-image behaviour and real cache numbers stay unknown
+until it is filled in. Suspected but unobserved: `IJEPAEncoder` loads the checkpoint with
+torch's default `weights_only`, which recent torch may reject for this file.
