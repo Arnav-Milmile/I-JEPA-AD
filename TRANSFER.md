@@ -1,5 +1,5 @@
 # TRANSFER.md
-_Last updated: 2026-10-10 10:45, at commit 24dca75 on branch `DataPipelineAndLatentCaching` (Phase 2 cache changes uncommitted in the working tree)_
+_Last updated: 2026-10-10 10:45, at commit 1c59cbd on branch `DataPipelineAndLatentCaching` (Phase 2 latent cache; pushed to `origin`)_
 
 ## 1. One-paragraph project state
 The data path is implemented and verified on CPU with synthetic data: MVTec discovery and validation, a deterministic nominal-only train/validation split, and deterministic I-JEPA preprocessing to `N×3×224×224`. As of this commit plus the working tree, a versioned latent cache (`caching/cache_schema.py`, `caching/latent_cache.py`) can save and load encoder-shaped tensors with validated metadata, integrity checksum, invalidation checks, and atomic writes; it is tested only with small synthetic tensors. The ViT-g/16 wrapper is tested only with a tiny stand-in model. The real checkpoint has never been loaded, the CUDA VRAM spike has not been run, and no real latent cache exists. The predictor, masking, baselines, and evaluation are not started.
@@ -70,7 +70,7 @@ Local-only state that is not committed:
 - MVTec AD under `data/raw/mvtec_ad` (the root-level `/data/` is gitignored). Validate it with `python validate_mvtec.py data/raw/mvtec_ad`.
 - Latent caches under `data/cache/latents/` (also covered by `/data/`). None exist yet; they are to be generated on a GPU host.
 
-Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/I-JEPA-AD`. Branch `DataPipelineAndLatentCaching` is pushed to `origin` at `24dca75`.
+Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/I-JEPA-AD`. Branch `DataPipelineAndLatentCaching` is pushed to `origin` at `1c59cbd`.
 
 ## 6. Known issues / open threads
 - **mypy and numpy on Python 3.12:** numpy 2.5.x stubs use 3.12-only `type` syntax, which mypy rejects with `python_version = "3.11"` once any checked module imports numpy directly. `transforms.py` and the cache modules avoid importing numpy directly (the cache calls `Tensor.numpy()` only).
