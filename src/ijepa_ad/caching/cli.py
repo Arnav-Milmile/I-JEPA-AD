@@ -9,8 +9,10 @@ DECISIONS.md, 2026-10-10 "Cache-generation CLI and run summary".
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
+import math
 import shutil
 import sys
 from collections.abc import Sequence
@@ -44,11 +46,21 @@ PATCH_SIZE = 16
 REAL_NUM_TOKENS = 196
 REAL_EMBEDDING_DIM = 1408
 MOCK_ENCODER_NAME = "mock_encoder"
-MOCK_CHECKPOINT_SHA256 = "0" * 64
 MOCK_CACHE_SUBDIR = "_mock"
 ENTRY_FAILURE_KEY = "<entry>"
 
 logger = logging.getLogger("ijepa_ad.cache")
+
+
+def mock_checkpoint_sha256(seed: int) -> str:
+    """Stand-in checkpoint identity of the mock projection drawn with ``seed``.
+
+    The mock has no checkpoint; this hash makes its identity explicit and
+    deterministic, so a different seed (a different projection) never reuses a cache.
+    The embedding dimension is part of the cache identity separately.
+    """
+    text = f"{MOCK_ENCODER_NAME}:random-projection:seed={seed}"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 class CacheRunConfigError(Exception):
@@ -172,7 +184,11 @@ def run_cache_generation(
     cache_root = config.cache_root
     if config.mock_encoder:
         cache_root = cache_root / MOCK_CACHE_SUBDIR  # never touch real caches
-        name, sha, device_name = MOCK_ENCODER_NAME, MOCK_CHECKPOINT_SHA256, "cpu"
+        name, sha, device_name = (
+            MOCK_ENCODER_NAME,
+            mock_checkpoint_sha256(config.seed),
+            "cpu",
+        )
         embedding_dim = config.mock_embedding_dim
         num_tokens = (config.image_size // PATCH_SIZE) ** 2
         if encoder is None:
@@ -298,6 +314,15 @@ def _check_config(config: CacheRunConfig) -> None:
         raise CacheRunConfigError("at least one category is required")
     if config.batch_size < 1:
         raise CacheRunConfigError("batch_size must be at least 1")
+    if config.purpose == "nominal" and (
+        isinstance(config.val_fraction, bool)
+        or not isinstance(config.val_fraction, int | float)
+        or not math.isfinite(config.val_fraction)
+        or not 0.0 < config.val_fraction < 1.0
+    ):  # same rule as split_nominal_train_val
+        raise CacheRunConfigError(
+            f"val_fraction must be a number in (0, 1), got {config.val_fraction!r}"
+        )
     if not config.dataset_root.is_dir():
         raise CacheRunConfigError(f"dataset root not found: {config.dataset_root}")
     try:
@@ -339,7 +364,9 @@ def build_parser() -> argparse.ArgumentParser:
         prog="python -m ijepa_ad.caching.cli",
         description=(
             "Generate resumable I-JEPA latent caches. Reruns skip compatible entries "
-            "and recompute missing, corrupted, or incompatible ones. 'nominal' caches "
+            "and shards and recompute missing, corrupted, or incompatible shards; a "
+            "corrupted final entry is reported and left untouched (use --rebuild to "
+            "replace it). 'nominal' caches "
             "a train/val split of train/good only; 'test' caches the official test "
             "split for evaluation and is never mixed into training caches."
         ),

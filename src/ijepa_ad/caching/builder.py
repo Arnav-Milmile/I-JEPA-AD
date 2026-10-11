@@ -112,12 +112,13 @@ def build_latent_cache(
     ``num_tokens`` (e.g. 196 for the real encoder), when given, is checked together
     with ``embedding_dim`` on every encoder output before anything is saved.
 
-    Failure handling: a sample that cannot be preprocessed is recorded and raises
-    ``CacheBuildError`` after the others are processed (their shards are kept and no
-    final entry is written). An encoder output of the wrong shape raises
-    ``CacheBuildError`` at once; an exception raised by the encoder itself propagates
-    unchanged. Neither is retried per sample: such failures are systematic (OOM, wrong
-    model), so resuming the run is the recovery path.
+    Failure handling: a sample that cannot be preprocessed, or whose batch makes the
+    encoder raise an ``Exception`` (e.g. out of memory), is recorded as failed and
+    ``CacheBuildError`` is raised after the other batches are processed (their shards
+    are kept and no final entry is written). A failed batch is never retried or split:
+    such failures are usually systematic, so resuming the run is the recovery path.
+    ``KeyboardInterrupt`` and ``SystemExit`` are not caught. An encoder output of the
+    wrong shape or with non-finite values raises ``CacheBuildError`` at once.
     """
     if batch_size < 1:
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
@@ -142,6 +143,7 @@ def build_latent_cache(
             embedding_dim=embedding_dim,
             preprocessing=spec,
             sample_ids=sample_ids,
+            num_tokens=num_tokens,
         )
 
     if try_load_latent_cache(final_path, expectations(ids)) is not None:
@@ -169,7 +171,13 @@ def build_latent_cache(
                 failed[record.image_id] = f"{record.image_path.name}: {error}"
         if not good:
             continue
-        latents = encoder.encode(torch.stack(images)).detach().to("cpu")
+        try:
+            latents = encoder.encode(torch.stack(images)).detach().to("cpu")
+        except Exception as error:  # any encoder fault fails this batch, not the run
+            reason = f"encoder failed: {type(error).__name__}: {error}"
+            for record in good:
+                failed[record.image_id] = f"{record.image_path.name}: {reason}"
+            continue
         if latents.ndim != 3 or latents.shape[0] != len(good):
             raise CacheBuildError(
                 f"encoder returned shape {tuple(latents.shape)} for {len(good)} "

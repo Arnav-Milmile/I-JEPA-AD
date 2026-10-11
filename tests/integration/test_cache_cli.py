@@ -116,10 +116,10 @@ def test_resume_after_interrupted_run_recomputes_only_the_missing(
         def encode(self, image_batch: Tensor) -> Tensor:
             Crashing.calls += 1
             if Crashing.calls == 2:
-                raise RuntimeError("simulated crash")
+                raise KeyboardInterrupt("simulated crash")
             return super().encode(image_batch)
 
-    with pytest.raises(RuntimeError, match="simulated"):
+    with pytest.raises(KeyboardInterrupt, match="simulated"):
         run_cache_generation(config, Crashing(DIM, config.seed))
     root = _mock_root(config)
     assert not latent_cache_path(root, "bottle", "train").exists()
@@ -141,10 +141,10 @@ def test_corrupted_shard_is_reported_as_recomputed(tmp_path: Path) -> None:
         def encode(self, image_batch: Tensor) -> Tensor:
             Crashing.calls += 1
             if Crashing.calls == 2:
-                raise RuntimeError("simulated crash")
+                raise KeyboardInterrupt("simulated crash")
             return super().encode(image_batch)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         run_cache_generation(config, Crashing(DIM, config.seed))
     shard = sorted(parts_dir(_mock_root(config), "bottle", "train").glob("*.pt"))[0]
     shard.write_bytes(b"garbage")
@@ -270,3 +270,145 @@ def test_cli_requires_a_category(capsys: pytest.CaptureFixture[str]) -> None:
         main([])
     assert raised.value.code == 2
     assert "--category" in capsys.readouterr().err
+
+
+# --- review fixes: encoder failures, mock identity, val_fraction, recovery ---------
+
+
+class _FailingOnce(MockLatentEncoder):
+    """Raises on its first call only (e.g. one out-of-memory batch)."""
+
+    def __init__(self, embedding_dim: int, seed: int) -> None:
+        super().__init__(embedding_dim, seed)
+        self.calls = 0
+
+    def encode(self, image_batch: Tensor) -> Tensor:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("CUDA out of memory")
+        return super().encode(image_batch)
+
+
+def test_encoder_failure_is_summarized_and_other_work_continues(
+    tmp_path: Path,
+) -> None:
+    _make_category(tmp_path / "mvtec", "bottle")
+    _make_category(tmp_path / "mvtec", "capsule")
+    config = _config(tmp_path, categories=("bottle", "capsule"))
+    encoder = _FailingOnce(DIM, config.seed)
+
+    summary = run_cache_generation(config, encoder)
+
+    assert not summary.ok
+    by_entry = {(r.category, r.split): r for r in summary.results}
+    failed = by_entry[("bottle", "train")]
+    assert failed.status == "failed" and len(failed.failed) == 4  # first batch only
+    assert all("out of memory" in why for why in failed.failed.values())
+    assert by_entry[("bottle", "val")].status == "complete"
+    assert by_entry[("capsule", "train")].status == "complete"
+    assert summary.to_dict()["totals"]["failed"] == 4
+    root = _mock_root(config)
+    assert not latent_cache_path(root, "bottle", "train").exists()
+    assert latent_cache_path(root, "capsule", "train").is_file()
+
+    again = run_cache_generation(config).to_dict()  # resume encodes only the 4 missing
+    assert again["ok"] and again["totals"]["encoded_new"] == 4
+
+
+def test_changing_the_mock_seed_never_reuses_other_projection(tmp_path: Path) -> None:
+    _make_category(tmp_path / "mvtec")
+    config = _config(tmp_path, purpose="test", seed=0)  # test ids ignore the seed
+    path = latent_cache_path(_mock_root(config), "bottle", "test")
+    run_cache_generation(config)
+    seed0 = load_latent_cache(path)
+
+    other = run_cache_generation(replace(config, seed=1))
+
+    assert other.to_dict()["totals"]["encoded_new"] == 2  # nothing reused
+    seed1 = load_latent_cache(path)
+    assert seed1.metadata.checkpoint_sha256 != seed0.metadata.checkpoint_sha256
+    assert seed1.metadata.encoder_name == seed0.metadata.encoder_name == "mock_encoder"
+    assert not (seed1.latents == seed0.latents).all()
+
+    same = run_cache_generation(replace(config, seed=1)).to_dict()["totals"]
+    assert same["encoded_new"] == 0 and same["skipped_compatible"] == 2
+    assert (load_latent_cache(path).latents == seed1.latents).all()
+
+
+def test_invalid_val_fraction_is_a_config_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _make_category(tmp_path / "mvtec")
+    base = [
+        "--dataset-root", str(tmp_path / "mvtec"),
+        "--cache-root", str(tmp_path / "cache"),
+        "--category", "bottle",
+        "--image-size", "32",
+        "--mock-encoder",
+        "--mock-embedding-dim", str(DIM),
+    ]  # fmt: skip
+    for fraction in (0.0, 1.0, -0.1, 1.5, float("nan"), float("inf")):
+        config = _config(tmp_path, val_fraction=fraction)
+        with pytest.raises(CacheRunConfigError, match="val_fraction"):
+            run_cache_generation(config)
+        assert main([*base, f"--val-fraction={fraction}"]) == 2
+        assert "val_fraction" in capsys.readouterr().err
+        assert not (tmp_path / "cache").exists()  # rejected before any encoding
+
+
+def test_boolean_val_fraction_is_a_config_error(tmp_path: Path) -> None:
+    _make_category(tmp_path / "mvtec")
+
+    with pytest.raises(CacheRunConfigError, match="val_fraction"):
+        run_cache_generation(_config(tmp_path, val_fraction=True))
+
+
+def test_valid_val_fractions_are_accepted(tmp_path: Path) -> None:
+    _make_category(tmp_path / "mvtec")
+
+    for index, fraction in enumerate((0.1, 0.2, 0.5)):
+        config = _config(
+            tmp_path, val_fraction=fraction, cache_root=tmp_path / f"cache{index}"
+        )
+        assert run_cache_generation(config).ok
+
+
+def test_corrupted_final_entry_is_reported_and_rebuild_recovers(
+    tmp_path: Path,
+) -> None:
+    _make_category(tmp_path / "mvtec")
+    config = _config(tmp_path)
+    run_cache_generation(config)
+    root = _mock_root(config)
+    train_path = latent_cache_path(root, "bottle", "train")
+    val_path = latent_cache_path(root, "bottle", "val")
+    val_bytes = val_path.read_bytes()
+    train_path.write_bytes(b"garbage")
+
+    summary = run_cache_generation(config)  # documented: reported, never overwritten
+
+    results = {r.split: r for r in summary.results}
+    assert results["train"].status == "failed" and train_path.read_bytes() == b"garbage"
+    assert results["val"].status == "complete" and results["val"].already_complete
+    assert val_path.read_bytes() == val_bytes  # valid entry stays reusable
+
+    recovered = run_cache_generation(replace(config, rebuild=True))
+
+    assert recovered.ok
+    assert load_latent_cache(train_path).latents.shape[0] == 8
+
+
+def test_failed_rebuild_never_leaves_a_valid_looking_entry(tmp_path: Path) -> None:
+    _make_category(tmp_path / "mvtec")
+    config = _config(tmp_path)
+    run_cache_generation(config)
+    train_path = latent_cache_path(_mock_root(config), "bottle", "train")
+    train_path.write_bytes(b"garbage")
+
+    summary = run_cache_generation(
+        replace(config, rebuild=True), _FailingOnce(DIM, config.seed)
+    )
+
+    failed = [r for r in summary.results if r.status == "failed"]
+    assert [r.split for r in failed] == ["train"]
+    assert not train_path.exists()  # absent, not a stale or partial entry

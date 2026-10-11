@@ -93,11 +93,15 @@ python -m ijepa_ad.caching.cli --category bottle capsule hazelnut --device cuda 
 Record with the run: the summary JSON (it contains the checkpoint SHA-256, device,
 batch size, and `encoder_kind`), the `external/ijepa` commit, `--val-fraction` (0.1) and
 `--seed` (0), and the torch version. Resume: rerun the identical command; compatible
-entries and shards are skipped, missing/corrupt/incompatible ones are recomputed
-(`recomputed` in the summary). `--rebuild` discards the selected entries first. Exit
+entries and shards are skipped, missing/corrupt/incompatible shards are recomputed
+(`recomputed` in the summary). A corrupted final entry is reported as failed and left
+untouched; `--rebuild` discards the selected entries first and is the way to replace it.
+An encoder exception (e.g. out of memory) fails its batch only: those samples appear
+under `failed_samples` and a rerun encodes just them. Exit
 code 0 means every entry is complete, 1 that some failed (see `failed_samples`), 2 a
 configuration error. Mock caches live under `_mock` and carry encoder name
-`mock_encoder`, so they never satisfy a real run's compatibility check.
+`mock_encoder` and a checkpoint hash derived from `--seed`, so they never satisfy a real
+run's compatibility check and a different seed never reuses another projection.
 
 Validation status: the CLI and summary are tested on CPU with synthetic images and the
 mock encoder only. No real-checkpoint, GPU, or real-MVTec cache generation has been run.
@@ -150,7 +154,7 @@ CPU commands (dev environment from `TRANSFER.md` §5):
 
 ```bash
 ./.venv/Scripts/python.exe -m pytest tests/integration/test_person2_cache_consumer.py -q  # 13 passed
-./.venv/Scripts/python.exe -m pytest tests/unit tests/integration -q                      # 150 passed
+./.venv/Scripts/python.exe -m pytest tests/unit tests/integration -q                      # 168 passed
 ./.venv/Scripts/ruff.exe check .
 ./.venv/Scripts/black.exe --check --workers 1 .
 ./.venv/Scripts/mypy.exe src tests

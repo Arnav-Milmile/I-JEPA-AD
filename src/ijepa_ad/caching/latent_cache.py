@@ -154,8 +154,6 @@ def save_latent_cache(
     path = Path(path)
     tensor = latents.detach().to("cpu").contiguous()
     _check_tensor_matches_metadata(tensor, metadata)
-    if not bool(torch.isfinite(tensor).all()):
-        raise CacheMetadataError("latents contain NaN or infinite values")
     if compute_tensor_sha256(tensor) != metadata.latents_sha256:
         raise CacheMetadataError(
             "metadata.latents_sha256 does not match the latents being saved; "
@@ -265,3 +263,6 @@ def _check_tensor_matches_metadata(tensor: Tensor, metadata: CacheMetadata) -> N
             f"latents have dtype {tensor.dtype} but metadata declares "
             f"{metadata.latent_dtype}"
         )
+    # Shared by save and load: non-finite latents never enter or leave a cache.
+    if not bool(torch.isfinite(tensor).all()):
+        raise CacheMetadataError("latents contain NaN or infinite values")

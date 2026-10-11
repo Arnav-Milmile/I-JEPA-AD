@@ -8,6 +8,7 @@ See DECISIONS.md, 2026-10-10 "Latent cache format and schema".
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -52,6 +53,23 @@ class PreprocessingSpec:
     crop: str = "none"
     version: int = PREPROCESSING_VERSION
 
+    def __post_init__(self) -> None:
+        # Every construction path (direct, from_config, from_dict, replace) is checked
+        # and normalized here, so mean/std are always float tuples and an invalid spec
+        # can never be saved, compared, or built into metadata.
+        _as_positive_int(self.image_size, "preprocessing.image_size")
+        mean = _as_float_triple(self.mean, "preprocessing.mean")
+        std = _as_float_triple(self.std, "preprocessing.std")
+        if any(value <= 0 for value in std):
+            raise CacheMetadataError(
+                f"preprocessing.std values must be positive, got {std}"
+            )
+        _as_str(self.resize, "preprocessing.resize")
+        _as_str(self.crop, "preprocessing.crop")
+        _as_positive_int(self.version, "preprocessing.version")
+        object.__setattr__(self, "mean", mean)
+        object.__setattr__(self, "std", std)
+
     @classmethod
     def from_config(cls, config: PreprocessConfig) -> PreprocessingSpec:
         """Describe ``config``; resize/crop mirror ``data.transforms`` (fixed)."""
@@ -75,21 +93,7 @@ class PreprocessingSpec:
             {"image_size", "mean", "std", "resize", "crop", "version"},
             "preprocessing",
         )
-        spec = cls(
-            image_size=_as_positive_int(
-                mapping["image_size"], "preprocessing.image_size"
-            ),
-            mean=_as_float_triple(mapping["mean"], "preprocessing.mean"),
-            std=_as_float_triple(mapping["std"], "preprocessing.std"),
-            resize=_as_str(mapping["resize"], "preprocessing.resize"),
-            crop=_as_str(mapping["crop"], "preprocessing.crop"),
-            version=_as_positive_int(mapping["version"], "preprocessing.version"),
-        )
-        if any(value <= 0 for value in spec.std):
-            raise CacheMetadataError(
-                f"preprocessing.std values must be positive, got {spec.std}"
-            )
-        return spec
+        return cls(**mapping)
 
 
 @dataclass(frozen=True)
@@ -258,7 +262,8 @@ class CacheExpectations:
     """What the caller needs a cache entry to match in order to reuse it.
 
     ``sample_ids`` is optional; when given, the entry must contain exactly those
-    samples in that order.
+    samples in that order. ``num_tokens`` is optional too; when given, the entry must
+    hold exactly that many tokens per sample.
     """
 
     category: str
@@ -270,6 +275,7 @@ class CacheExpectations:
     preprocessing: PreprocessingSpec
     sample_ids: tuple[str, ...] | None = None
     schema_version: int = SCHEMA_VERSION
+    num_tokens: int | None = None
 
     def mismatches(self, metadata: CacheMetadata) -> list[str]:
         """Human-readable differences between ``metadata`` and these expectations."""
@@ -285,6 +291,8 @@ class CacheExpectations:
         ]
         if self.sample_ids is not None:
             checks.append(("sample_ids", self.sample_ids, metadata.sample_ids))
+        if self.num_tokens is not None:
+            checks.append(("num_tokens", self.num_tokens, metadata.num_tokens))
         return [
             f"{name}: expected {_brief(expected)}, cache has {_brief(actual)}"
             for name, expected, actual in checks
@@ -340,6 +348,8 @@ def _as_float_triple(value: object, name: str) -> tuple[float, float, float]:
         if isinstance(item, bool) or not isinstance(item, int | float):
             raise CacheMetadataError(f"{name} must contain numbers, got {item!r}")
     a, b, c = (float(item) for item in value)
+    if not all(math.isfinite(item) for item in (a, b, c)):
+        raise CacheMetadataError(f"{name} must be finite, got {value!r}")
     return (a, b, c)
 
 
