@@ -1,13 +1,16 @@
 # FLOW.md
 _Living HLD + LLD + runtime-flow reference for I-JEPA-AD._
-_This file is rewritten in place as the system changes — it is NOT append-only. Update rules: see CLAUDE.md._
-_Last reviewed against src/: 2026-10-10 — Phase 6 handoff (consumption contract documented and tested; no source change)._
+_This file is rewritten in place as the system changes; it is NOT append-only. Update rules: see AGENT.md._
+_Last reviewed against src/: 2026-10-11 - Person 2 cache-backed predictor dataset implemented._
 
 ## 1. High-Level Design
 The data path is implemented through latent caching (generation, resume, lookup) and
-validated end to end on synthetic data with a mock encoder (Phase 5). **Not
-implemented:** the predictor, masking, baselines, and evaluation packages (empty); the
-real encoder has never run on real weights or images.
+validated end to end on synthetic data with a mock encoder (Phase 5). Person 2's
+predictor-side work is implemented through CPU-verifiable training code: cached-latent
+dataset/batches, masked-token Transformer predictor, cosine/L2 losses, training loop,
+checkpoint saving, and a training CLI. **Not implemented:** masking, baselines,
+evaluation metrics, and real GPU training; the real encoder has never run on real
+weights or images.
 
 ```text
 <root>/<category>/{train,test,ground_truth}
@@ -31,9 +34,18 @@ caching.builder.build_latent_cache  (batches; per-sample shards
         │   <split>.parts/<id>.pt; resumable; assembles only when complete)
         ▼                                 ──> <root>/<category>/<split>.pt
         │  load_latent_cache(path, CacheExpectations) ──> LatentCache(latents, metadata)
-        │  .get(image_id) / .select(ids)   — no encoder re-run
+        │  .get(image_id) / .select(ids)   - no encoder re-run
         ▼
-predictor / masking / baselines / evaluation   — not implemented
+predictor.cache_dataset.CachedLatentDataset
+        │
+        ▼
+predictor.training.train_predictor ──> predictor.transformer_predictor
+        │                                      │
+        │                                      ▼
+        └────────────── checkpoint.pt <── losses on masked latent tokens
+        │
+        ▼
+masking / baselines / evaluation   - not implemented
 ```
 
 The `utils` package now provides cross-cutting controls used by every future
@@ -82,7 +94,10 @@ Foundational utility interfaces:
   reads `torch.cuda.max_memory_allocated()` on CUDA hosts and safely reports zero
   on CPU-only hosts.
 
-Predictor, masking, baselines, and evaluation packages are still empty.
+The predictor package contains the Person 2 path up to training execution. It can read
+cached latents, join optional annotations, train a lightweight Transformer predictor on
+masked latent-token reconstruction, validate on the nominal validation cache, and save a
+checkpoint. Masking, baselines, and evaluation packages are still empty.
 Hydra/OmegaConf is not wired in: `configs/data/mvtec.yaml` records `root`,
 `pilot_categories`, `preprocessing.{image_size, resize, mean, std}`, and
 `nominal_split.{val_fraction, seed, min_train, min_val}`, `latent_cache.root`, but no code loads it yet.
@@ -162,6 +177,34 @@ Caching interfaces (`src/ijepa_ad/caching/`):
   `CacheNotFoundError`, `CacheCorruptedError`, `CacheIncompatibleError` (all
   `CacheError`).
 
+Predictor interfaces (`src/ijepa_ad/predictor/`):
+
+- [`cache_dataset.py`](src/ijepa_ad/predictor/cache_dataset.py):
+  `load_cached_latent_dataset(cache_root, expected, *, samples=None) ->
+  CachedLatentDataset` loads `<cache_root>/<category>/<split>.pt` through
+  `load_latent_cache` and optional `MVTecSample` annotations. `CachedLatentDataset`
+  is indexable by integer/slice, exposes `sample_ids`, `latents`, `category`, `split`,
+  and `select(image_ids) -> Tensor[N, tokens, dim]`. `CachedLatentSample` returns one
+  sample (`latent` is `tokens x dim`, no batch axis). `annotations_by_image_id()`
+  builds the optional label/mask join table, rejecting duplicate IDs.
+  `collate_cached_latents(samples) -> CachedLatentBatch` stacks samples into
+  `N x tokens x dim` and rejects empty or mixed category/split batches.
+- [`losses.py`](src/ijepa_ad/predictor/losses.py):
+  `cosine_prediction_loss(predicted, target, target_mask)`, `l2_prediction_loss(...)`,
+  and `prediction_loss(..., loss_type)` compute losses only over selected target
+  tokens. Inputs are `B x tokens x dim`; `target_mask` is `B x tokens`.
+- [`transformer_predictor.py`](src/ijepa_ad/predictor/transformer_predictor.py):
+  `PredictorConfig` validates architecture fields. `LatentTransformerPredictor`
+  projects cached latents to a hidden dimension, replaces masked tokens with a learned
+  mask token, adds learned positional embeddings, runs a Transformer encoder, and
+  projects back to the latent dimension.
+- [`training.py`](src/ijepa_ad/predictor/training.py):
+  `TrainingConfig`, `train_predictor(model, train_dataset, val_dataset, config,
+  checkpoint_path=None) -> TrainingResult`, `build_random_target_mask(...)`, and
+  `main(argv)` for `python -m ijepa_ad.predictor.training`. Training uses AdamW,
+  random target masks, cosine or L2 loss, validation loss tracking, optional early
+  stopping, and checkpoint saving. `scripts/train_predictor.py` is a thin wrapper.
+
 Latent cache schema (version 2; v1 lacked `preprocessing.version`). Layout: `<cache_root>/<category>/<split>.pt`, where
 split is `train`, `val` or `test`; default root `data/cache/latents` (gitignored via
 `/data/`). The file holds exactly `latents` (`N×tokens×dim` tensor) and
@@ -189,12 +232,10 @@ is `CacheCorruptedError` and is never swallowed.
 
 ### Downstream consumption contract (Person 2)
 
-Status: **implemented and tested by Person 1**
-(`tests/integration/test_person2_cache_consumer.py`, with a stand-in consumer).
-Person 2's predictor does not exist in this repository, so integration with their code
-is **not verified**. `caching/__init__.py` re-exports nothing; import from the
-submodules named below (`cache_schema`, `latent_cache`; the data-side names from
-`data.transforms`).
+Status: **implemented through CPU-tested training mechanics**. The original stand-in
+contract test still exists (`tests/integration/test_person2_cache_consumer.py`), real
+Person 2 adapter code lives in `predictor.cache_dataset`, and predictor/loss/training
+code lives under `predictor/`. Real GPU training on real caches has not been run.
 
 What a consumer provides: the cache root, a category, a split (`train`, `val` or
 `test`), and a `CacheExpectations` describing the run that produced the entry
@@ -212,6 +253,14 @@ cache.metadata         # CacheMetadata: category, split, sample_ids, dtype, hash
 cache.get(image_id)    # Tensor[196, 1408]      ONE sample, no batch dimension
 cache.select(ids)      # Tensor[len(ids), 196, 1408]   a batch, in the order asked
 cache.index_of(id)     # row number;  `id in cache` -> bool
+
+from ijepa_ad.predictor import load_cached_latent_dataset, collate_cached_latents
+
+dataset = load_cached_latent_dataset(cache_root, expected, samples=test.samples)
+dataset[0].latent      # Tensor[196, 1408]
+dataset[0].annotation  # optional SampleAnnotation(label, mask_path, image_path)
+batch = collate_cached_latents([dataset[2], dataset[0]])
+batch.latents          # Tensor[2, 196, 1408], in requested order
 ```
 
 - Sample identity: `image_id`, the SHA-256 of the image bytes (the same value as
@@ -220,8 +269,9 @@ cache.index_of(id)     # row number;  `id in cache` -> bool
   the metadata, so a file renamed into another category/split is
   `CacheIncompatibleError`. `train`/`val` come from the nominal split of `train/good`;
   `test` is the official test set from a separate run (`--purpose test`).
-- Labels and masks are **not** in the cache. For `test`, join `image_id` to
-  `MVTecSample.label`/`mask_path` from `validate_category_splits`.
+- Labels and masks are **not** in the cache. For `test`, pass the official
+  `MVTecSample` records to `load_cached_latent_dataset(..., samples=test.samples)` to
+  join `image_id` to `label`/`mask_path`.
 - Dtype and device: the dtype the encoder returned at build time
   (`metadata.latent_dtype`; production dtype undecided), loaded on CPU. Move or cast in
   the consumer. `select` returns a copy; `get` and `.latents` share memory with the
@@ -281,6 +331,20 @@ file copied to another category or split, or a shard copied under another sample
 name, is incompatible and is rebuilt. Each encoder output batch must have the right
 rows/tokens/dim and be finite before any of its shards are written (`CacheBuildError`).
 Row order in an entry is the order of the records given (split output is path-sorted).
+
+Person 2 training flow after real `train` and `val` caches exist:
+
+1. Build `CacheExpectations` for the category/split/checkpoint/preprocessing.
+2. Optionally discover records (`train, test = validate_category_splits(...)`) when
+   labels or masks must be joined.
+3. `dataset = load_cached_latent_dataset(cache_root, expected, samples=...)`.
+4. Construct `LatentTransformerPredictor(PredictorConfig(...))`.
+5. Run `train_predictor(model, train_dataset, val_dataset, TrainingConfig(...),
+   checkpoint_path=...)`, or use `scripts/train_predictor.py`.
+6. Training samples random target masks, predicts all tokens, computes loss only on
+   masked tokens, validates on `val`, restores the best state, and writes a checkpoint
+   if requested. Predictor code does not call the encoder or parse cache `.pt` payloads
+   directly.
 
 Test defects remain evaluation-only and never participate in model selection.
 

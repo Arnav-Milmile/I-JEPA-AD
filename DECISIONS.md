@@ -323,3 +323,62 @@ code. Not verified: Person 2's code, the real checkpoint, GPU, real MVTec. Noted
 GPU host: `IJEPAEncoder._load_checkpoint` uses torch's default `weights_only` (the
 runbook and spike pass `False`); not changed because it cannot be tested without the
 checkpoint.
+
+## [2026-10-11] Person 2 cache-backed predictor dataset
+**Context:** The handoff said Person 2's real code did not exist; only a stand-in
+consumer test documented how cached latents should be read. The next role needs a
+stable predictor-facing API before the Transformer predictor and training loop are
+implemented.
+**Options considered:** Keep using `LatentCache` directly in future predictor code;
+add re-exports only; or add a small dataset-style adapter in `predictor/` that loads
+through the public cache API and joins optional labels/masks by image id.
+**Decision:** Add `src/ijepa_ad/predictor/cache_dataset.py` with
+`load_cached_latent_dataset`, `CachedLatentDataset`, per-sample and batch dataclasses,
+`annotations_by_image_id`, and `collate_cached_latents`. The adapter keeps cache
+validation in `load_latent_cache`, preserves cache row order, returns one latent as
+`tokens x dim`, stacks batches as `N x tokens x dim`, and treats labels/masks as an
+optional join from `MVTecSample` records rather than adding them to cache files.
+**Rationale:** This gives Person 2 real code without changing the cache schema or
+duplicating integrity checks. Keeping annotations outside the cache preserves the
+existing producer/consumer boundary and supports train/val nominal-only use as well as
+test-time label/mask joins.
+**Baseline / prior state:** `predictor/` only contained an empty `__init__.py`; Person 2
+was represented by `tests/integration/test_person2_cache_consumer.py` and prose in
+`FLOW.md`.
+**Outcome after change:** 157 tests pass on CPU. Added 7 unit tests for the new adapter:
+load/order/shape, id-ordered selection, optional annotation join, missing annotation
+failure, duplicate annotation failure, collate ordering, and empty/mixed-split collate
+failure. Existing 13 Person 2 contract tests still pass. Not implemented yet:
+Transformer predictor, losses, training loop, masking, baselines, metrics, real MVTec,
+GPU, or real checkpoint inference.
+
+## [2026-10-11] Complete Person 2 predictor training path without GPU execution
+**Context:** Person 2 needed to be finished as far as possible before GPU access is
+available, so the later GPU session only has to generate real caches and run training.
+The cache-backed dataset existed, but the predictor model, losses, training loop, CLI,
+and overfit sanity test were still missing.
+**Options considered:** Wait for real GPU caches before writing training code; build a
+notebook-only prototype; or implement the reusable library path and verify it on tiny
+synthetic cached latents on CPU.
+**Decision:** Add `losses.py`, `transformer_predictor.py`, `training.py`, and
+`scripts/train_predictor.py`. The predictor is a lightweight Transformer encoder over
+cached latent tokens with learned mask and positional embeddings. Training samples
+random target masks, optimizes cosine or L2 loss only on masked tokens, validates on
+the nominal validation cache, tracks best validation loss, and optionally saves a
+checkpoint containing model config, training config, history, and best epoch. The CLI
+loads `train`/`val` cache entries using `CacheExpectations` and writes the checkpoint
+to a caller-provided path.
+**Rationale:** CPU synthetic cache tests can verify the training mechanics now without
+pretending real MVTec/I-JEPA numbers exist. Keeping this as source modules plus a thin
+script makes the later GPU run a command execution task instead of new engineering.
+The training loop uses a small internal batch iterator instead of `torch.utils.data`
+because, in this Windows/Python 3.13 environment, mypy followed that import path into
+NumPy stubs that are incompatible with the repo's configured Python 3.11 target.
+**Baseline / prior state:** Person 2 could load and batch cached latents, but there was
+no model, loss, optimizer loop, checkpoint output, or overfit test.
+**Outcome after change:** 165 tests pass on CPU. Added 8 predictor tests: hand-computed
+cosine/L2 loss checks, predictor shape/input validation, deterministic random mask
+checks, and a tiny synthetic cached-latent training test that substantially reduces
+validation loss and saves a checkpoint. `ruff check .`, `black --check --workers 1 .`,
+and `mypy src tests` pass. Not executed: real MVTec cache generation, real GPU
+training, real predictor quality metrics, masking/inference, baselines, or evaluation.
