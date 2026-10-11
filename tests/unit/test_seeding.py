@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from ijepa_ad.utils.seeding import set_seed
+from ijepa_ad.utils.seeding import seeded_rng, set_seed
 
 
 def test_set_seed_repeats_python_and_numpy_sequences() -> None:
@@ -80,3 +80,21 @@ def test_set_seed_calls_torch_and_cuda_controls(monkeypatch: Any) -> None:
     ]
     assert FakeTorch.backends.cudnn.deterministic is True
     assert FakeTorch.backends.cudnn.benchmark is False
+
+
+def test_seeded_rng_is_reproducible_and_isolated() -> None:
+    random.seed(5)
+    state = random.getstate()
+
+    first = [seeded_rng(11).random() for _ in range(3)]
+    second = [seeded_rng(11).random() for _ in range(3)]
+
+    assert first == second
+    assert random.getstate() == state
+
+
+def test_seeded_rng_rejects_invalid_values() -> None:
+    with pytest.raises(TypeError):
+        seeded_rng(True)
+    with pytest.raises(ValueError):
+        seeded_rng(-1)

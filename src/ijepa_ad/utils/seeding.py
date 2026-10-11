@@ -14,10 +14,7 @@ def set_seed(seed: int) -> None:
     documentation and configuration environments that do not install the training
     stack. A full training environment is expected to provide PyTorch.
     """
-    if isinstance(seed, bool) or not isinstance(seed, int):
-        raise TypeError("seed must be an integer")
-    if seed < 0:
-        raise ValueError("seed must be non-negative")
+    _validate_seed(seed)
 
     random.seed(seed)
     numpy = _load_numpy()
@@ -36,6 +33,24 @@ def set_seed(seed: int) -> None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
+
+
+def seeded_rng(seed: int) -> random.Random:
+    """Return an isolated Python RNG for deterministic data operations.
+
+    Unlike ``set_seed``, this leaves global random state and PyTorch flags
+    untouched, so library code (e.g. dataset splitting) can be deterministic
+    without side effects on the caller's experiment state.
+    """
+    _validate_seed(seed)
+    return random.Random(seed)
+
+
+def _validate_seed(seed: int) -> None:
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise TypeError("seed must be an integer")
+    if seed < 0:
+        raise ValueError("seed must be non-negative")
 
 
 def _load_torch() -> Any | None:

@@ -7,3 +7,5 @@ num_patches: 196
 checkpoint_source: https://dl.fbaipublicfiles.com/ijepa/IN22K-vit.g.16-600e.pth.tar
 checkpoint_path: checkpoints/IN22K-vit.g.16-600e.pth.tar
 official_repo_path: ""
+# Identifier recorded in latent-cache metadata; a different value invalidates caches.
+encoder_name: ijepa_vit_g16_in22k_ep44

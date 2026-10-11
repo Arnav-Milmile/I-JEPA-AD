@@ -29,7 +29,7 @@ class MVTecSample(SampleMetadata):
 
 class MVTecADDataset(Sequence[MVTecSample]):
     """Indexable metadata dataset for one MVTec AD category and split.
-    
+
     The class deliberately returns validated path metadata rather than loading
     images. Image decoding/transforms belong at the model boundary and can be
     added later without weakening split validation.
@@ -43,6 +43,8 @@ class MVTecADDataset(Sequence[MVTecSample]):
         *,
         validate: bool = True,
     ) -> None:
+        if split not in ("train", "test"):
+            raise ValueError(f"split must be 'train' or 'test', got {split!r}")
         self.root = Path(root)
         self.category = category
         self.split = split

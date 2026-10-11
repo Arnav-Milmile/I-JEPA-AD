@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ijepa_ad.data.mvtec_dataset import validate_category_splits
+from ijepa_ad.data.mvtec_dataset import MVTecADDataset, validate_category_splits
 from ijepa_ad.data.validators import DatasetValidationError
 
 
@@ -74,3 +74,70 @@ def test_defect_without_official_mask_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(DatasetValidationError, match="missing"):
         validate_category_splits(tmp_path, "bottle")
+
+
+def test_nominal_training_samples_carry_correct_metadata(tmp_path: Path) -> None:
+    _make_fixture(tmp_path)
+
+    train = MVTecADDataset(tmp_path, "bottle", "train")
+
+    assert [sample.image_path.name for sample in train] == [
+        "000.png",
+        "001.png",
+        "002.png",
+        "003.png",
+    ]
+    for sample in train:
+        assert sample.category == "bottle"
+        assert sample.split == "train"
+        assert sample.label == "good"
+        assert not sample.is_anomalous
+        assert len(sample.image_id) == 64
+
+
+def test_test_labels_follow_directories_and_masks_pair_by_stem(
+    tmp_path: Path,
+) -> None:
+    _make_fixture(tmp_path)
+
+    test = MVTecADDataset(tmp_path, "bottle", "test")
+
+    for sample in test:
+        assert sample.label == sample.image_path.parent.name
+        if sample.is_anomalous:
+            assert sample.mask_path is not None
+            assert sample.mask_path.parent.name == sample.label
+            assert sample.mask_path.name == f"{sample.image_path.stem}_mask.png"
+        else:
+            assert sample.mask_path is None
+
+
+def test_missing_category_is_rejected(tmp_path: Path) -> None:
+    _make_fixture(tmp_path)
+
+    with pytest.raises(DatasetValidationError, match="training directory"):
+        MVTecADDataset(tmp_path, "capsule", "train")
+
+
+def test_missing_test_directory_is_rejected(tmp_path: Path) -> None:
+    _write(tmp_path, "bottle/train/good/000.png", b"train")
+
+    with pytest.raises(DatasetValidationError, match="test directory"):
+        MVTecADDataset(tmp_path, "bottle", "test")
+
+
+def test_empty_training_directory_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "bottle/train/good").mkdir(parents=True)
+
+    with pytest.raises(DatasetValidationError, match="empty"):
+        MVTecADDataset(tmp_path, "bottle", "train")
+
+
+def test_unknown_split_name_is_rejected_instead_of_reading_the_test_tree(
+    tmp_path: Path,
+) -> None:
+    _make_fixture(tmp_path)
+
+    for validate in (True, False):
+        with pytest.raises(ValueError, match="split"):
+            MVTecADDataset(tmp_path, "bottle", "val", validate=validate)  # type: ignore[arg-type]
