@@ -155,6 +155,42 @@ def test_corrupted_shard_is_reported_as_recomputed(tmp_path: Path) -> None:
     assert totals["encoded_new"] == 6 and totals["skipped_compatible"] == 3
 
 
+def test_failed_stale_replacement_never_yields_negative_encoded_new(
+    tmp_path: Path,
+) -> None:
+    _make_category(tmp_path / "mvtec")
+    config = _config(tmp_path)
+
+    class Crashing(MockLatentEncoder):
+        calls = 0
+
+        def encode(self, image_batch: Tensor) -> Tensor:
+            Crashing.calls += 1
+            if Crashing.calls == 2:
+                raise KeyboardInterrupt("simulated crash")
+            return super().encode(image_batch)
+
+    with pytest.raises(KeyboardInterrupt):
+        run_cache_generation(config, Crashing(DIM, config.seed))
+    shards = sorted(parts_dir(_mock_root(config), "bottle", "train").glob("*.pt"))
+    for shard in shards[:2]:
+        shard.write_bytes(b"garbage")
+
+    class AlwaysFailing(MockLatentEncoder):
+        def encode(self, image_batch: Tensor) -> Tensor:
+            raise RuntimeError("out of memory")
+
+    summary = run_cache_generation(config, AlwaysFailing(DIM, config.seed))
+
+    data = summary.to_dict()
+    totals = data["totals"]
+    assert not summary.ok
+    assert totals["recomputed"] == 0  # no replacement succeeded
+    assert totals["encoded_new"] == 0
+    assert all(r.encoded >= r.recomputed >= 0 for r in summary.results)
+    assert totals["failed"] == 8  # every train and val sample failed
+
+
 def test_unreadable_image_is_reported_and_other_category_still_built(
     tmp_path: Path,
 ) -> None:

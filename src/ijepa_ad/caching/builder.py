@@ -10,6 +10,7 @@ from partial results. See DECISIONS.md, 2026-10-10 "Resumable cache generation".
 
 from __future__ import annotations
 
+import logging
 import shutil
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -43,6 +44,8 @@ from ijepa_ad.data.validators import (
     validate_test_records,
     validate_training_records,
 )
+
+logger = logging.getLogger("ijepa_ad.cache")
 
 _Expectations = Callable[[tuple[str, ...]], CacheExpectations]
 
@@ -154,9 +157,14 @@ def build_latent_cache(
         for record in records
         if not _shard_is_valid(shard_root, record.image_id, expectations)
     ]
-    recomputed = sum(
-        (shard_root / f"{record.image_id}.pt").exists() for record in missing
-    )
+    # Unusable shards that exist on disk; counted as recomputed only once the
+    # replacement has been encoded and saved.
+    stale_ids = {
+        record.image_id
+        for record in missing
+        if (shard_root / f"{record.image_id}.pt").exists()
+    }
+    recomputed = 0
     encoded = 0
     failed: dict[str, str] = {}
     for start in range(0, len(missing), batch_size):
@@ -174,6 +182,13 @@ def build_latent_cache(
         try:
             latents = encoder.encode(torch.stack(images)).detach().to("cpu")
         except Exception as error:  # any encoder fault fails this batch, not the run
+            logger.exception(
+                "encoder failed for %s/%s on batch of %d images: %s",
+                category,
+                split,
+                len(good),
+                [record.image_id for record in good],
+            )
             reason = f"encoder failed: {type(error).__name__}: {error}"
             for record in good:
                 failed[record.image_id] = f"{record.image_path.name}: {reason}"
@@ -199,6 +214,7 @@ def build_latent_cache(
         for row, record in enumerate(good):
             _save_shard(shard_root, record, latents[row : row + 1], expectations)
         encoded += len(good)
+        recomputed += sum(record.image_id in stale_ids for record in good)
 
     if failed:
         partial = BuildReport(
