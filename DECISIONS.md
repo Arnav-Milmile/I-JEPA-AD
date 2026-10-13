@@ -235,11 +235,12 @@ dependency). Defaults mirror `configs/data/mvtec.yaml` and `configs/encoder/vitg
 `split_nominal_train_val`; `test` caches only the official test split, as a separate
 entry. Both go through `validate_category_splits`. (4) Failure policy: unreadable
 samples and unusable final entries are recorded in the summary and the run continues
-with the next entry; exit code 1 if any failed, 2 for bad configuration. An exception
-raised by the encoder itself aborts the run and is not retried per sample (OOM or a
-wrong model fails every sample; finished shards stay, so rerunning resumes). (5) The
+with the next entry; exit code 1 if any failed, 2 for bad configuration. (Superseded
+2026-10-12: an exception raised by the encoder now fails only its batch, see "PR review
+fixes".) (5) The
 mock encoder (`--mock-encoder`) is CPU-only, writes under `<cache-root>/_mock`, uses
-the fixed identity `mock_encoder` / checkpoint hash `0*64`, and the summary reports
+the identity `mock_encoder` with a seed-derived checkpoint hash (2026-10-12; it was
+the fixed `0*64`), and the summary reports
 `encoder_kind: "mock"`, `real_checkpoint_inference: false`. (6) `--rebuild` deletes the
 selected entries and shards before building; resume is otherwise automatic. (7) The
 real encoder's input batches are moved to `--device` by a small adapter; the checkpoint
@@ -323,3 +324,52 @@ code. Not verified: Person 2's code, the real checkpoint, GPU, real MVTec. Noted
 GPU host: `IJEPAEncoder._load_checkpoint` uses torch's default `weights_only` (the
 runbook and spike pass `False`); not changed because it cannot be tested without the
 checkpoint.
+
+
+## 2026-10-12 - PR review fixes (Qodo findings on the data pipeline and caching PR)
+**Context:** Eight findings were verified against the code before any change; seven
+were reproduced by a failing test first, one (corrupted-entry recovery) was a
+documentation inconsistency, not a defect.
+**Decision:** (1) *Encoder exceptions.* `build_latent_cache` catches `Exception` from
+`encoder.encode` per batch, records every sample of that batch as failed
+(`<file>: encoder failed: <Type>: <message>`), saves nothing from it, never retries or
+splits it, continues with later batches, and raises `CacheBuildError` (with `.failed`
+and the partial `.report`) at the end. The CLI therefore records it in the summary and
+moves on to the next entry or category. `KeyboardInterrupt`/`SystemExit` still
+propagate. This replaces the 2026-10-10 rule that an encoder exception aborts the run.
+(2) *Corrupted final entry.* Unchanged on purpose: it is reported, left byte-for-byte
+untouched, and never auto-replaced, because an entry that failed its checksum may be
+the only copy of an expensive GPU run and silent replacement hides disk damage.
+Recovery is explicit: `--rebuild`. Only the CLI help text and REPRODUCIBILITY.md
+overstated this ("corrupted ones are recomputed" holds for shards only); they were
+corrected. (3) *Mock identity.* The mock checkpoint hash is
+`sha256("mock_encoder:random-projection:seed=<seed>")` (`mock_checkpoint_sha256`), so a
+different seed (a different projection) never reuses a cache; the name stays
+`mock_encoder` and caches stay under `_mock`. (4) *Token count.* `CacheExpectations`
+gained optional `num_tokens`, which `build_latent_cache` always passes, so a completed
+entry is judged by the same rule as a new encoding; a mismatch is not reused, the
+existing entry is left in place, and the encode path then raises `CacheBuildError`.
+(5) *`val_fraction`.* `_check_config` rejects values outside (0, 1), NaN, infinity and
+booleans with `CacheRunConfigError` (exit code 2) for `--purpose nominal`, the only
+purpose that uses it; nothing is clamped. (6) *`PreprocessingSpec`.* Validation and
+normalization moved into `__post_init__`, so direct construction, `replace`,
+`from_config` and `from_dict` share one rule set: positive integer sizes/version, string
+resize/crop, exactly three finite numeric mean and std values, std > 0 (the old
+`<= 0` test let a NaN std through). (7) *List/tuple.* `mean`/`std` are normalized to
+float tuples there, so a YAML-style list and the tuple read back from disk compare
+equal; a genuinely different value still mismatches. `transforms.PreprocessConfig` is
+unchanged. (8) *Loading.* The finite-value check now lives in
+`_check_tensor_matches_metadata`, shared by save and load; a non-finite file raises
+`CacheCorruptedError` on load.
+**Rationale:** Findings 1 and 4 to 8 were real gaps between the documented invariants
+and the code paths; 3 would have let a test run silently reuse another projection.
+For 2, replacing a corrupt entry automatically would contradict two existing tests
+and the earlier decision, and `--rebuild` already provides the recovery.
+**Test changes:** Tests that simulated a crashed run by raising `RuntimeError` from the
+encoder (`test_cache_cli.py` x2, `test_latent_cache_pipeline.py` x4 incl. the shared
+mock, `test_pipeline_end_to_end.py` x1) now raise `KeyboardInterrupt`, the interruption
+that still aborts a run; their assertions are unchanged. Two files use
+`mock_checkpoint_sha256(0)` instead of the removed `MOCK_CHECKPOINT_SHA256`.
+**Outcome after change:** 168 tests pass on CPU (150 before). ruff, black and mypy are
+clean. Not verified: real encoder, GPU, real MVTec; a CUDA out-of-memory error is only
+simulated with a `RuntimeError`.

@@ -1,5 +1,8 @@
 """MVTec → nominal split → preprocessing → mock encoder → resumable latent cache."""
 
+import contextlib
+import logging
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -55,7 +58,7 @@ class MockEncoder:
 
     def encode(self, image_batch: Tensor) -> Tensor:
         if self.fail_on_call == len(self.batch_sizes):
-            raise RuntimeError("simulated encoder crash")
+            raise KeyboardInterrupt("simulated encoder crash")
         self.batch_sizes.append(image_batch.shape[0])
         patches = image_batch.unfold(2, PATCH, PATCH).unfold(3, PATCH, PATCH)
         patches = patches.permute(0, 2, 3, 1, 4, 5).flatten(3)
@@ -141,7 +144,7 @@ def test_interrupted_run_resumes_without_recomputing_valid_entries(
     tmp_path: Path,
 ) -> None:
     train, _ = _data(tmp_path)
-    with pytest.raises(RuntimeError, match="simulated"):
+    with pytest.raises(KeyboardInterrupt, match="simulated"):
         build_latent_cache(
             train.samples,
             MockEncoder(fail_on_call=2),
@@ -179,7 +182,7 @@ def test_corrupt_shards_are_recomputed_and_leftover_temp_files_ignored(
     tmp_path: Path,
 ) -> None:
     train, _ = _data(tmp_path)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         build_latent_cache(
             train.samples,
             MockEncoder(fail_on_call=1),
@@ -340,7 +343,7 @@ def test_wrong_category_and_bad_arguments_are_rejected(tmp_path: Path) -> None:
 
 def test_report_counts_recomputed_shards(tmp_path: Path) -> None:
     train, _ = _data(tmp_path)
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         build_latent_cache(
             train.samples,
             MockEncoder(fail_on_call=1),
@@ -441,3 +444,304 @@ def test_test_split_cache_is_built_only_from_official_test_records(
         build_latent_cache(
             train.samples, MockEncoder(), cache_root=tmp_path, split="test", **COMMON
         )
+
+
+# --- review fixes: encoder failures, token reuse, list-valued normalization ------
+
+
+class FlakyEncoder(MockEncoder):
+    """Raises ``error`` on the calls listed in ``fail_on``; counts every call."""
+
+    def __init__(self, fail_on: set[int], error: BaseException) -> None:
+        super().__init__()
+        self.fail_on = fail_on
+        self.error = error
+        self.calls = 0
+
+    def encode(self, image_batch: Tensor) -> Tensor:
+        call = self.calls
+        self.calls += 1
+        if call in self.fail_on:
+            raise self.error
+        return super().encode(image_batch)
+
+
+def test_encoder_exception_fails_only_its_batch_and_run_continues(
+    tmp_path: Path,
+) -> None:
+    train, _ = _data(tmp_path)
+    encoder = FlakyEncoder({1}, RuntimeError("CUDA out of memory"))
+
+    with pytest.raises(CacheBuildError) as raised:
+        build_latent_cache(
+            train.samples,
+            encoder,
+            cache_root=tmp_path,
+            split="train",
+            batch_size=4,
+            **COMMON,
+        )
+
+    ids = [s.image_id for s in train.samples]
+    assert set(raised.value.failed) == set(ids[4:8])  # exactly the failed batch
+    assert all("out of memory" in why for why in raised.value.failed.values())
+    assert encoder.calls == 3  # later batches still ran; the failed one never retried
+    report = raised.value.report
+    assert report is not None and (report.encoded, report.reused) == (6, 0)
+    assert not latent_cache_path(tmp_path, "bottle", "train").exists()
+    shards = {p.stem for p in parts_dir(tmp_path, "bottle", "train").glob("*.pt")}
+    assert shards == set(ids[:4]) | set(ids[8:])  # nothing saved for the bad batch
+
+    healthy = MockEncoder()
+    resumed = build_latent_cache(
+        train.samples,
+        healthy,
+        cache_root=tmp_path,
+        split="train",
+        batch_size=4,
+        **COMMON,
+    )
+    assert (resumed.encoded, resumed.reused) == (4, 6)
+    assert healthy.batch_sizes == [4]
+    entry = load_latent_cache(latent_cache_path(tmp_path, "bottle", "train"))
+    assert entry.metadata.sample_ids == tuple(ids)
+
+
+def test_interrupts_are_not_swallowed_and_keep_finished_shards(
+    tmp_path: Path,
+) -> None:
+    train, _ = _data(tmp_path)
+    for index, interrupt in enumerate((KeyboardInterrupt(), SystemExit(1))):
+        root = tmp_path / f"cache{index}"
+        encoder = FlakyEncoder({1}, interrupt)
+
+        with pytest.raises(type(interrupt)):
+            build_latent_cache(
+                train.samples,
+                encoder,
+                cache_root=root,
+                split="train",
+                batch_size=4,
+                **COMMON,
+            )
+
+        assert len(list(parts_dir(root, "bottle", "train").glob("*.pt"))) == 4
+        assert not latent_cache_path(root, "bottle", "train").exists()
+
+
+def test_completed_cache_with_other_token_count_is_not_reused(tmp_path: Path) -> None:
+    train, _ = _data(tmp_path)
+    build_latent_cache(
+        train.samples,
+        MockEncoder(),
+        cache_root=tmp_path,
+        split="train",
+        num_tokens=4,
+        **COMMON,
+    )
+    path = latent_cache_path(tmp_path, "bottle", "train")
+    before = path.read_bytes()
+    reuse = MockEncoder()
+
+    report = build_latent_cache(
+        train.samples,
+        reuse,
+        cache_root=tmp_path,
+        split="train",
+        num_tokens=4,
+        **COMMON,
+    )
+    assert report.already_complete and reuse.batch_sizes == []
+
+    with pytest.raises(CacheBuildError, match="expected"):  # same as a fresh build
+        build_latent_cache(
+            train.samples,
+            MockEncoder(),
+            cache_root=tmp_path,
+            split="train",
+            num_tokens=9,
+            **COMMON,
+        )
+    assert path.read_bytes() == before  # the valid entry is untouched
+
+
+def test_list_valued_mean_and_std_still_reuse_the_cache(tmp_path: Path) -> None:
+    train, _ = _data(tmp_path)
+    mean: Any = [0.485, 0.456, 0.406]
+    std: Any = [0.229, 0.224, 0.225]
+    listed = PreprocessConfig(image_size=32, mean=mean, std=std)
+    arguments = dict(COMMON, config=listed)
+    first = MockEncoder()
+    build_latent_cache(
+        train.samples, first, cache_root=tmp_path, split="train", **arguments
+    )
+
+    second = MockEncoder()
+    report = build_latent_cache(
+        train.samples, second, cache_root=tmp_path, split="train", **arguments
+    )
+
+    assert report.already_complete and second.batch_sizes == []
+    # Equivalent tuple configuration (the default) matches the same entry.
+    entry = load_latent_cache(
+        latent_cache_path(tmp_path, "bottle", "train"),
+        _expected("train", tuple(s.image_id for s in train.samples)),
+    )
+    assert entry.latents.shape[0] == 10
+    different = dict(COMMON, config=PreprocessConfig(image_size=32, mean=(0.1,) * 3))
+    third = MockEncoder()
+    rebuilt = build_latent_cache(
+        train.samples, third, cache_root=tmp_path, split="train", **different
+    )
+    assert not rebuilt.already_complete and third.batch_sizes  # genuinely different
+
+
+class RaisingEncoder(MockEncoder):
+    """Raises ``error`` on the encode calls whose index is in ``raise_on``."""
+
+    def __init__(self, raise_on: set[int], error: BaseException) -> None:
+        super().__init__()
+        self.raise_on = raise_on
+        self.error = error
+        self.calls = 0
+
+    def encode(self, image_batch: Tensor) -> Tensor:
+        call = self.calls
+        self.calls += 1
+        if call in self.raise_on:
+            raise self.error
+        return super().encode(image_batch)
+
+
+@contextlib.contextmanager
+def _capture_cache_logs(caplog: pytest.LogCaptureFixture) -> Iterator[None]:
+    """Capture ``ijepa_ad.cache`` records even if ``setup_logging`` ran earlier."""
+    cache_logger = logging.getLogger("ijepa_ad.cache")
+    cache_logger.addHandler(caplog.handler)
+    try:
+        with caplog.at_level(logging.ERROR, logger="ijepa_ad.cache"):
+            yield
+    finally:
+        cache_logger.removeHandler(caplog.handler)
+
+
+def _interrupted_with_corrupt_shards(tmp_path: Path) -> list[str]:
+    """Five shards on disk, the first two corrupted; returns the ids of those two."""
+    train, _ = _data(tmp_path)
+    with pytest.raises(KeyboardInterrupt):
+        build_latent_cache(
+            train.samples,
+            MockEncoder(fail_on_call=1),
+            cache_root=tmp_path,
+            split="train",
+            batch_size=5,
+            **COMMON,
+        )
+    shards = sorted(parts_dir(tmp_path, "bottle", "train").glob("*.pt"))
+    for shard in shards[:2]:
+        shard.write_bytes(b"garbage")
+    return [shard.stem for shard in shards[:2]]
+
+
+def test_failed_replacement_of_stale_shard_is_not_counted_as_recomputed(
+    tmp_path: Path,
+) -> None:
+    _interrupted_with_corrupt_shards(tmp_path)
+    train, _ = _data(tmp_path)
+    encoder = RaisingEncoder({0}, RuntimeError("out of memory"))
+
+    with pytest.raises(CacheBuildError) as raised:
+        build_latent_cache(
+            train.samples,
+            encoder,
+            cache_root=tmp_path,
+            split="train",
+            batch_size=5,
+            **COMMON,
+        )
+
+    report = raised.value.report
+    assert report is not None
+    # Batch 1 (both stale shards + 3 new) failed; batch 2 (2 new) succeeded.
+    assert (report.encoded, report.recomputed, report.reused) == (2, 0, 3)
+    assert len(report.failed) == 5
+    assert 0 <= report.recomputed <= report.encoded
+
+
+def test_successful_stale_replacement_still_counts_when_another_batch_fails(
+    tmp_path: Path,
+) -> None:
+    _interrupted_with_corrupt_shards(tmp_path)
+    train, _ = _data(tmp_path)
+    encoder = RaisingEncoder({1}, RuntimeError("out of memory"))
+
+    with pytest.raises(CacheBuildError) as raised:
+        build_latent_cache(
+            train.samples,
+            encoder,
+            cache_root=tmp_path,
+            split="train",
+            batch_size=5,
+            **COMMON,
+        )
+
+    report = raised.value.report
+    assert report is not None
+    assert (report.encoded, report.recomputed, report.reused) == (5, 2, 3)
+    assert len(report.failed) == 2
+
+
+def test_encoder_exception_is_logged_with_context_and_traceback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    train, _ = _data(tmp_path)
+    encoder = RaisingEncoder({0}, RuntimeError("distinctive-encoder-fault"))
+
+    with _capture_cache_logs(caplog):
+        with pytest.raises(CacheBuildError) as raised:
+            build_latent_cache(
+                train.samples,
+                encoder,
+                cache_root=tmp_path,
+                split="train",
+                batch_size=4,
+                **COMMON,
+            )
+
+    first_batch = [s.image_id for s in train.samples[:4]]
+    assert set(raised.value.failed) == set(first_batch)  # structured reasons kept
+    assert all(
+        "RuntimeError: distinctive-encoder-fault" in reason
+        for reason in raised.value.failed.values()
+    )
+    assert encoder.calls == 3  # later batches still ran
+    records = [r for r in caplog.records if r.exc_info is not None]
+    assert len(records) == 1
+    record = records[0]
+    assert record.levelno == logging.ERROR
+    message = record.getMessage()
+    assert "bottle" in message and "train" in message
+    assert all(image_id in message for image_id in first_batch)
+    assert record.exc_info is not None
+    assert record.exc_info[0] is RuntimeError
+    assert record.exc_info[2] is not None  # traceback preserved
+    assert "distinctive-encoder-fault" in caplog.text
+    assert "Traceback (most recent call last)" in caplog.text
+
+
+def test_interpreter_exit_exceptions_propagate_from_encoder(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    train, _ = _data(tmp_path)
+
+    for fatal_type in (KeyboardInterrupt, SystemExit):
+        with _capture_cache_logs(caplog):
+            with pytest.raises(fatal_type):
+                build_latent_cache(
+                    train.samples,
+                    RaisingEncoder({0}, fatal_type()),
+                    cache_root=tmp_path,
+                    split="train",
+                    **COMMON,
+                )
+        assert not [r for r in caplog.records if r.exc_info is not None]

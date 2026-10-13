@@ -538,3 +538,122 @@ def test_preprocessing_version_invalidates_cache(tmp_path: Path) -> None:
 
     with pytest.raises(CacheIncompatibleError, match="preprocessing"):
         load_latent_cache(path, _expected(preprocessing=_spec(version=2)))
+
+
+# --- review fixes: spec validation, finite load, list/tuple normalization -------
+
+
+def _config_with(mean: Any, std: Any) -> PreprocessConfig:
+    return PreprocessConfig(image_size=IMAGE_SIZE, mean=mean, std=std)
+
+
+INVALID_STDS = [
+    (0.0, 0.2, 0.2),
+    (-0.1, 0.2, 0.2),
+    (float("nan"), 0.2, 0.2),
+    (float("inf"), 0.2, 0.2),
+]
+MALFORMED_SPEC_FIELDS: list[tuple[str, Any]] = [
+    ("mean", (0.5, 0.5)),
+    ("mean", "abc"),
+    ("mean", None),
+    ("mean", (True, 0.5, 0.5)),
+    ("mean", ("a", "b", "c")),
+    ("mean", (float("nan"), 0.5, 0.5)),
+    ("mean", (float("-inf"), 0.5, 0.5)),
+    ("std", (0.2, 0.2)),
+    ("std", ("a", "b", "c")),
+    ("image_size", 0),
+    ("image_size", True),
+    ("image_size", 32.0),
+    ("version", 0),
+    ("resize", 3),
+]
+
+
+def test_direct_construction_rejects_invalid_std() -> None:
+    for std in INVALID_STDS:
+        with pytest.raises(CacheMetadataError):
+            PreprocessingSpec(image_size=IMAGE_SIZE, mean=(0.5, 0.5, 0.5), std=std)
+        with pytest.raises(CacheMetadataError):
+            replace(_spec(), std=std)
+        data = _spec().to_dict()
+        data["std"] = list(std)
+        with pytest.raises(CacheMetadataError):
+            PreprocessingSpec.from_dict(data)
+
+
+def test_direct_construction_rejects_malformed_fields() -> None:
+    for field, value in MALFORMED_SPEC_FIELDS:
+        with pytest.raises(CacheMetadataError):
+            replace(_spec(), **{field: value})
+        data = _spec().to_dict()
+        data[field] = value
+        with pytest.raises(CacheMetadataError):
+            PreprocessingSpec.from_dict(data)
+
+
+def test_spec_normalizes_mean_and_std_to_float_tuples() -> None:
+    mean: Any = [1, 0.5, 0.25]
+    std: Any = [1, 2, 3]
+
+    spec = PreprocessingSpec(image_size=IMAGE_SIZE, mean=mean, std=std)
+
+    assert spec.mean == (1.0, 0.5, 0.25) and isinstance(spec.mean, tuple)
+    assert spec.std == (1.0, 2.0, 3.0) and isinstance(spec.std, tuple)
+    assert all(isinstance(value, float) for value in spec.mean + spec.std)
+
+
+def test_list_and_tuple_configs_give_equal_specs_and_survive_a_round_trip() -> None:
+    as_lists = PreprocessingSpec.from_config(_config_with([0.5] * 3, [0.25] * 3))
+    as_tuples = PreprocessingSpec.from_config(_config_with((0.5,) * 3, (0.25,) * 3))
+
+    assert as_lists == as_tuples
+    assert PreprocessingSpec.from_dict(as_lists.to_dict()) == as_tuples
+
+
+def test_cache_saved_with_list_config_matches_tuple_expectations(
+    tmp_path: Path,
+) -> None:
+    lists = PreprocessingSpec.from_config(_config_with([0.5] * 3, [0.25] * 3))
+    tuples = PreprocessingSpec.from_config(_config_with((0.5,) * 3, (0.25,) * 3))
+    latents = _latents()
+    path = latent_cache_path(tmp_path, "bottle", "train")
+    save_latent_cache(path, latents, _metadata(latents, preprocessing=lists))
+
+    assert load_latent_cache(path, _expected(preprocessing=lists)).latents.shape
+    assert load_latent_cache(path, _expected(preprocessing=tuples)).latents.shape
+    different = replace(tuples, mean=(0.5, 0.5, 0.4))
+    with pytest.raises(CacheIncompatibleError, match="preprocessing"):
+        load_latent_cache(path, _expected(preprocessing=different))
+
+
+def test_save_and_load_reject_every_non_finite_value(tmp_path: Path) -> None:
+    for index, bad in enumerate((float("nan"), float("inf"), float("-inf"))):
+        root = tmp_path / str(index)
+        latents = _latents()
+        latents[1, 0, 2] = bad
+        metadata = _metadata(latents)  # build_metadata does not look at values
+
+        with pytest.raises(CacheMetadataError, match="NaN or infinite"):
+            save_latent_cache(root / "x.pt", latents, metadata)
+        assert not (root / "x.pt").exists()
+
+        # A file whose checksum matches its (non-finite) data, e.g. from another tool.
+        path = latent_cache_path(root, "bottle", "train")
+        path.parent.mkdir(parents=True)
+        torch.save({"latents": latents, "metadata_json": metadata.to_json()}, path)
+        with pytest.raises(CacheCorruptedError, match="NaN or infinite"):
+            load_latent_cache(path)
+        with pytest.raises(CacheCorruptedError):
+            try_load_latent_cache(path, _expected())
+
+
+def test_expectations_check_num_tokens_only_when_given() -> None:
+    latents = _latents()
+    metadata = _metadata(latents)
+
+    assert _expected().mismatches(metadata) == []
+    assert _expected(num_tokens=TOKENS).mismatches(metadata) == []
+    problems = _expected(num_tokens=TOKENS + 1).mismatches(metadata)
+    assert len(problems) == 1 and "num_tokens" in problems[0]

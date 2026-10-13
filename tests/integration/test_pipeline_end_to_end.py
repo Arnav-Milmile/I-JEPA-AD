@@ -22,10 +22,10 @@ from ijepa_ad.caching.builder import CacheBuildError, build_latent_cache, parts_
 from ijepa_ad.caching.cache_schema import CacheExpectations, PreprocessingSpec
 from ijepa_ad.caching.cli import (
     MOCK_CACHE_SUBDIR,
-    MOCK_CHECKPOINT_SHA256,
     MOCK_ENCODER_NAME,
     CacheRunConfig,
     MockLatentEncoder,
+    mock_checkpoint_sha256,
     run_cache_generation,
 )
 from ijepa_ad.caching.latent_cache import (
@@ -122,7 +122,7 @@ def expectations(
         "category": "bottle",
         "split": split,
         "encoder_name": MOCK_ENCODER_NAME,
-        "checkpoint_sha256": MOCK_CHECKPOINT_SHA256,
+        "checkpoint_sha256": mock_checkpoint_sha256(0),
         "patch_size": 16,
         "embedding_dim": DIM,
         "preprocessing": PreprocessingSpec.from_config(CONFIG),
@@ -289,7 +289,7 @@ def test_builder_revalidates_records_even_when_a_complete_cache_exists(
         "cache_root": mock_root(config),
         "category": "bottle",
         "encoder_name": MOCK_ENCODER_NAME,
-        "checkpoint_sha256": MOCK_CHECKPOINT_SHA256,
+        "checkpoint_sha256": mock_checkpoint_sha256(0),
         "patch_size": 16,
         "embedding_dim": DIM,
         "config": CONFIG,
@@ -359,10 +359,10 @@ def test_shard_copied_under_another_samples_name_is_recomputed(tmp_path: Path) -
     class Crashing(SpyEncoder):
         def encode(self, image_batch: Tensor) -> Tensor:
             if len(self.batches) == 1:
-                raise RuntimeError("simulated crash")
+                raise KeyboardInterrupt("simulated crash")
             return super().encode(image_batch)
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(KeyboardInterrupt):
         run_cache_generation(config, Crashing())
     shards = sorted(parts_dir(mock_root(config), "bottle", "train").glob("*.pt"))
     assert len(shards) == 5
@@ -576,7 +576,7 @@ def test_failed_build_error_is_catchable_as_cache_build_error(tmp_path: Path) ->
             category="bottle",
             split="train",
             encoder_name=MOCK_ENCODER_NAME,
-            checkpoint_sha256=MOCK_CHECKPOINT_SHA256,
+            checkpoint_sha256=mock_checkpoint_sha256(0),
             patch_size=16,
             embedding_dim=DIM,
             config=CONFIG,
