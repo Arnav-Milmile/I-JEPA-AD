@@ -392,6 +392,15 @@ def test_invalid_val_fraction_is_a_config_error(
         assert not (tmp_path / "cache").exists()  # rejected before any encoding
 
 
+def test_huge_integer_val_fraction_is_a_config_error(tmp_path: Path) -> None:
+    _make_category(tmp_path / "mvtec")
+
+    for fraction in (10**400, -(10**400)):
+        with pytest.raises(CacheRunConfigError, match="val_fraction"):
+            run_cache_generation(_config(tmp_path, val_fraction=fraction))
+    assert not (tmp_path / "cache").exists()  # rejected before any encoding
+
+
 def test_boolean_val_fraction_is_a_config_error(tmp_path: Path) -> None:
     _make_category(tmp_path / "mvtec")
 

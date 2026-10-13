@@ -12,7 +12,6 @@ import argparse
 import hashlib
 import json
 import logging
-import math
 import shutil
 import sys
 from collections.abc import Sequence
@@ -317,9 +316,8 @@ def _check_config(config: CacheRunConfig) -> None:
     if config.purpose == "nominal" and (
         isinstance(config.val_fraction, bool)
         or not isinstance(config.val_fraction, int | float)
-        or not math.isfinite(config.val_fraction)
         or not 0.0 < config.val_fraction < 1.0
-    ):  # same rule as split_nominal_train_val
+    ):  # same rule as split_nominal_train_val; also rejects NaN/±inf/huge ints
         raise CacheRunConfigError(
             f"val_fraction must be a number in (0, 1), got {config.val_fraction!r}"
         )
