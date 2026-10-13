@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import logging
+import math
 import shutil
 import sys
 from collections.abc import Sequence
