@@ -17,6 +17,7 @@ Mirrors `docs/IMPLEMENTATION_PLAN.md` §3.
 
 ## 3. What is verified working right now
 Verified on Windows, Python 3.12.10, torch 2.14.1+cpu, Pillow 12.3.0, ruff 0.8.6, black 25.1.0, mypy 1.14.1, in `.venv`, by running the commands in §5 (all CPU, no network, no CUDA):
+- PR review fixes (2026-10-12, see `DECISIONS.md`): `pytest tests/unit tests/integration`: **168 passed**; `ruff check .`: all checks passed; `black --check --workers 1 .`: 38 files unchanged; `mypy src tests`: no issues in 35 source files. All CPU, mock encoder, synthetic data; no real encoder, GPU or MVTec involved.
 - Phase 6 re-run: `pytest tests/unit tests/integration`: **150 passed** (137 + 13 new in `tests/integration/test_person2_cache_consumer.py`). `ruff check .`: all checks passed. `black --check --workers 1 .`: 38 files unchanged. `mypy src tests`: no issues in 35 source files. No source file changed in Phase 6.
 - **Consuming the cache (Person 2):** see `FLOW.md`, "Downstream consumption contract". In short: `load_latent_cache(latent_cache_path(root, category, split), CacheExpectations(...))` returns a `LatentCache`; `.latents` is `[N, 196, 1408]`, `.get(image_id)` is one sample `[196, 1408]`, `.select(ids)` a batch, `.metadata.sample_ids` the row order; labels and masks are not cached. The 13 Phase 6 tests exercise this with a stand-in consumer (association against an independent re-encode, train/val/test separation, incompatibility, missing and corrupt entries). Person 2's real code does not exist in the repo, so integration with it is **unverified**; the re-export/helper/dtype-option ideas in `DECISIONS.md` (Phase 6) are proposals awaiting their agreement.
 - Earlier verified state (Phase 5): 137 passed, 37 files black-clean, mypy 34 files.
@@ -92,7 +93,7 @@ Remotes: `origin` → `unknown7751/I-JEPA-AD` (fork), `upstream` → `Auxilus08/
 - **Wrong filename references:** `DECISIONS.md` and `FLOW.md` headers reference `CLAUDE.md`, but the governing file is `AGENT.md`.
 - **Tracked swap file:** `.validate_mvtec.py.swp` is still tracked (pre-existing); Phase 5 did not touch it.
 - **Dataset duplicates stop a category:** identical bytes inside `train/good` raise `DatasetValidationError` (no dedup). By design; unverified against real MVTec.
-- **Other exception types:** an exception other than `CacheError`/`DatasetValidationError`/`FileNotFoundError` (e.g. Pillow's `DecompressionBombError` on a huge image, or an encoder crash) still propagates from the CLI as a traceback; finished shards are kept and a rerun resumes.
+- **Other exception types:** an exception other than `CacheError`/`DatasetValidationError`/`FileNotFoundError` (e.g. Pillow's `DecompressionBombError` on a huge image) still propagates from the CLI as a traceback (an `Exception` from the encoder no longer does: it fails its batch and is summarized); finished shards are kept and a rerun resumes.
 - **Loader leniency:** a mask under `ground_truth/good/` and orphan masks with no matching image are ignored, not rejected.
 - **Checkpoint hash cost:** `compute_file_sha256` reads the whole multi-GB checkpoint; the CLI does it once per run.
 - **Sample ids and corrupt images:** an id is the SHA-256 of file content, so replacing an image's bytes changes its id; a run re-discovers files each time.
