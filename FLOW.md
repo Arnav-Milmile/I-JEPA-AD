@@ -207,7 +207,11 @@ Predictor interfaces (`src/ijepa_ad/predictor/`):
   checkpoint_path=None) -> TrainingResult`, `build_random_target_mask(...)`, and
   `main(argv)` for `python -m ijepa_ad.predictor.training`. Training uses AdamW,
   random target masks, cosine or L2 loss, validation loss tracking, optional early
-  stopping, and checkpoint saving. `scripts/train_predictor.py` is a thin wrapper.
+  stopping, and checkpoint saving. The CLI seeds before predictor initialization;
+  training requires distinct train/val cache splits, batches lazily, casts cached
+  latents to the model dtype, and keeps validation masks fixed across epochs.
+  Checkpoints include cache provenance (encoder/checkpoint/preprocessing, latent
+  dtype, and train/val sample IDs). `scripts/train_predictor.py` is a thin wrapper.
 
 Latent cache schema (version 2; v1 lacked `preprocessing.version`). Layout: `<cache_root>/<category>/<split>.pt`, where
 split is `train`, `val` or `test`; default root `data/cache/latents` (gitignored via

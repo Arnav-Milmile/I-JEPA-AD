@@ -26,6 +26,8 @@ class SampleAnnotation:
     image_path: Path
     label: str
     mask_path: Path | None
+    category: str
+    source_split: str
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,7 @@ class CachedLatentDataset(Sequence[CachedLatentSample]):
     ) -> None:
         self._cache = cache
         self._annotations = dict(annotations or {})
+        source_split = _source_split_for_cache_split(self.split)
         missing = [
             image_id
             for image_id in self._cache.metadata.sample_ids
@@ -69,6 +72,20 @@ class CachedLatentDataset(Sequence[CachedLatentSample]):
         if missing:
             raise ValueError(
                 "annotations are missing cached sample ids: " + ", ".join(missing[:3])
+            )
+        mismatched = [
+            image_id
+            for image_id in self._cache.metadata.sample_ids
+            if image_id in self._annotations
+            and (
+                self._annotations[image_id].category != self.category
+                or self._annotations[image_id].source_split != source_split
+            )
+        ]
+        if mismatched:
+            raise ValueError(
+                "annotations do not match cache category/source split for ids: "
+                + ", ".join(mismatched[:3])
             )
 
     def __len__(self) -> int:
@@ -88,7 +105,7 @@ class CachedLatentDataset(Sequence[CachedLatentSample]):
         image_id = self._cache.metadata.sample_ids[index]
         return CachedLatentSample(
             image_id=image_id,
-            latent=self._cache.get(image_id),
+            latent=self._cache.latents[index],
             category=self.category,
             split=self.split,
             annotation=self._annotations.get(image_id),
@@ -131,24 +148,54 @@ def load_cached_latent_dataset(
     cache = load_latent_cache(
         latent_cache_path(cache_root, expected.category, expected.split), expected
     )
-    annotations = None if samples is None else annotations_by_image_id(samples)
+    annotations = (
+        None
+        if samples is None
+        else annotations_by_image_id(
+            samples,
+            category=cache.metadata.category,
+            source_split=_source_split_for_cache_split(cache.metadata.split),
+        )
+    )
     return CachedLatentDataset(cache, annotations=annotations)
 
 
 def annotations_by_image_id(
     samples: Sequence[MVTecSample],
+    *,
+    category: str | None = None,
+    source_split: str | None = None,
 ) -> dict[str, SampleAnnotation]:
     """Build the label/mask join table for cached ids."""
     annotations: dict[str, SampleAnnotation] = {}
     for sample in samples:
+        if category is not None and sample.category != category:
+            raise ValueError(
+                f"annotation category {sample.category!r} does not match {category!r}"
+            )
+        if source_split is not None and sample.split != source_split:
+            raise ValueError(
+                f"annotation source split {sample.split!r} does not match "
+                f"{source_split!r}"
+            )
         if sample.image_id in annotations:
             raise ValueError(f"duplicate sample id in annotations: {sample.image_id}")
         annotations[sample.image_id] = SampleAnnotation(
             image_path=sample.image_path,
             label=sample.label,
             mask_path=sample.mask_path,
+            category=sample.category,
+            source_split=sample.split,
         )
     return annotations
+
+
+def _source_split_for_cache_split(cache_split: str) -> str:
+    if cache_split in {"train", "val"}:
+        return "train"
+    if cache_split == "test":
+        return "test"
+    raise ValueError(f"unsupported cache split: {cache_split!r}")
 
 
 def collate_cached_latents(

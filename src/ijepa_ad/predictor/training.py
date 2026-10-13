@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -95,16 +96,7 @@ def train_predictor(
     checkpoint_path: str | Path | None = None,
 ) -> TrainingResult:
     """Train a predictor on cached train latents and validate on cached val latents."""
-    if train_dataset.category != val_dataset.category:
-        raise ValueError("train and val datasets must use the same category")
-    if train_dataset.cache.metadata.embedding_dim != model.config.embedding_dim:
-        raise ValueError("dataset embedding_dim does not match model")
-    if train_dataset.cache.metadata.num_tokens != model.config.num_tokens:
-        raise ValueError("dataset num_tokens does not match model")
-    if val_dataset.cache.metadata.embedding_dim != model.config.embedding_dim:
-        raise ValueError("val embedding_dim does not match model")
-    if val_dataset.cache.metadata.num_tokens != model.config.num_tokens:
-        raise ValueError("val num_tokens does not match model")
+    _validate_training_inputs(model, train_dataset, val_dataset)
 
     set_seed(config.seed)
     device = torch.device(config.device)
@@ -149,7 +141,7 @@ def train_predictor(
             ),
             config,
             device,
-            mask_generator,
+            torch.Generator(device="cpu").manual_seed(config.seed + 10_000),
         )
         history.append(EpochMetrics(epoch, train_loss, val_loss))
         if val_loss < best_val - config.min_delta:
@@ -171,7 +163,16 @@ def train_predictor(
     saved_path = None
     if checkpoint_path is not None:
         saved_path = Path(checkpoint_path)
-        _save_checkpoint(saved_path, model, config, history, best_epoch, best_val)
+        _save_checkpoint(
+            saved_path,
+            model,
+            config,
+            history,
+            best_epoch,
+            best_val,
+            train_dataset,
+            val_dataset,
+        )
 
     return TrainingResult(tuple(history), best_epoch, best_val, saved_path)
 
@@ -212,6 +213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         mlp_ratio=args.mlp_ratio,
         dropout=args.dropout,
     )
+    set_seed(args.seed)
     training_config = TrainingConfig(
         batch_size=args.batch_size,
         max_epochs=args.max_epochs,
@@ -237,7 +239,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _run_epoch(
     model: LatentTransformerPredictor,
-    batches: Sequence[CachedLatentBatch],
+    batches: Iterator[CachedLatentBatch],
     config: TrainingConfig,
     device: torch.device,
     mask_generator: torch.Generator,
@@ -248,8 +250,9 @@ def _run_epoch(
     model.train(training)
     total_loss = 0.0
     total_samples = 0
+    dtype = next(model.parameters()).dtype
     for batch in batches:
-        latents = batch.latents.to(device)
+        latents = batch.latents.to(device=device, dtype=dtype)
         mask = build_random_target_mask(
             latents.shape[0], latents.shape[1], config.mask_ratio, mask_generator
         ).to(device)
@@ -277,15 +280,13 @@ def _iter_batches(
     batch_size: int,
     shuffle: bool,
     generator: torch.Generator,
-) -> tuple[CachedLatentBatch, ...]:
+) -> Iterator[CachedLatentBatch]:
     indices = torch.arange(len(dataset))
     if shuffle:
         indices = indices[torch.randperm(len(dataset), generator=generator)]
-    batches = []
     for start in range(0, len(dataset), batch_size):
         batch_indices = indices[start : start + batch_size].tolist()
-        batches.append(collate_cached_latents([dataset[int(i)] for i in batch_indices]))
-    return tuple(batches)
+        yield collate_cached_latents([dataset[int(i)] for i in batch_indices])
 
 
 def _save_checkpoint(
@@ -295,6 +296,8 @@ def _save_checkpoint(
     history: Sequence[EpochMetrics],
     best_epoch: int,
     best_val_loss: float,
+    train_dataset: CachedLatentDataset,
+    val_dataset: CachedLatentDataset,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {
@@ -304,8 +307,66 @@ def _save_checkpoint(
         "history": [asdict(item) for item in history],
         "best_epoch": best_epoch,
         "best_val_loss": best_val_loss,
+        "cache_provenance": _cache_provenance(train_dataset, val_dataset),
     }
     torch.save(payload, path)
+
+
+def _validate_training_inputs(
+    model: LatentTransformerPredictor,
+    train_dataset: CachedLatentDataset,
+    val_dataset: CachedLatentDataset,
+) -> None:
+    if train_dataset.category != val_dataset.category:
+        raise ValueError("train and val datasets must use the same category")
+    if train_dataset.split != "train":
+        raise ValueError(
+            f"train_dataset split must be 'train', got {train_dataset.split!r}"
+        )
+    if val_dataset.split != "val":
+        raise ValueError(f"val_dataset split must be 'val', got {val_dataset.split!r}")
+    overlap = set(train_dataset.sample_ids) & set(val_dataset.sample_ids)
+    if overlap:
+        sample = sorted(overlap)[0]
+        raise ValueError(f"train and val datasets overlap at sample id {sample!r}")
+    if train_dataset.cache.metadata.embedding_dim != model.config.embedding_dim:
+        raise ValueError("dataset embedding_dim does not match model")
+    if train_dataset.cache.metadata.num_tokens != model.config.num_tokens:
+        raise ValueError("dataset num_tokens does not match model")
+    if val_dataset.cache.metadata.embedding_dim != model.config.embedding_dim:
+        raise ValueError("val embedding_dim does not match model")
+    if val_dataset.cache.metadata.num_tokens != model.config.num_tokens:
+        raise ValueError("val num_tokens does not match model")
+
+
+def _cache_provenance(
+    train_dataset: CachedLatentDataset, val_dataset: CachedLatentDataset
+) -> dict[str, Any]:
+    train = train_dataset.cache.metadata
+    val = val_dataset.cache.metadata
+    return {
+        "category": train.category,
+        "encoder_name": train.encoder_name,
+        "checkpoint_sha256": train.checkpoint_sha256,
+        "preprocessing": train.preprocessing.to_dict(),
+        "train": {
+            "split": train.split,
+            "latent_dtype": train.latent_dtype,
+            "sample_ids_sha256": _sample_ids_sha256(train.sample_ids),
+            "sample_ids": list(train.sample_ids),
+        },
+        "val": {
+            "split": val.split,
+            "latent_dtype": val.latent_dtype,
+            "sample_ids_sha256": _sample_ids_sha256(val.sample_ids),
+            "sample_ids": list(val.sample_ids),
+        },
+    }
+
+
+def _sample_ids_sha256(sample_ids: Sequence[str]) -> str:
+    text = "\n".join(sample_ids)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _expectations(

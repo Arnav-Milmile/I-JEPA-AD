@@ -59,14 +59,20 @@ def _write_cache(
     return latents, sample_ids
 
 
-def _sample(image_id: str, *, label: str = "good") -> MVTecSample:
+def _sample(
+    image_id: str,
+    *,
+    label: str = "good",
+    category: str = CATEGORY,
+    split: str = "train",
+) -> MVTecSample:
     return MVTecSample(
         image_path=Path(f"{image_id}.png"),
         image_id=image_id,
-        split="train",
+        split=split,
         label=label,
         mask_path=None,
-        category=CATEGORY,
+        category=category,
     )
 
 
@@ -100,14 +106,28 @@ def test_dataset_selects_latents_in_requested_id_order(tmp_path: Path) -> None:
     assert torch.equal(selected[1], latents[0])
 
 
+def test_dataset_indexing_uses_cache_row_without_id_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    latents, _ = _write_cache(tmp_path)
+    dataset = load_cached_latent_dataset(tmp_path, _expected())
+
+    def reject_id_lookup(_cache: object, _sample_id: str) -> torch.Tensor:
+        raise AssertionError("dataset indexing should use the known cache row")
+
+    monkeypatch.setattr(type(dataset.cache), "get", reject_id_lookup)
+
+    assert torch.equal(dataset[1].latent, latents[1])
+
+
 def test_optional_annotations_join_labels_and_masks_by_image_id(
     tmp_path: Path,
 ) -> None:
     _write_cache(tmp_path, split="test")
     samples = (
-        _sample("id-a", label="good"),
-        _sample("id-b", label="broken"),
-        _sample("id-c", label="good"),
+        _sample("id-a", label="good", split="test"),
+        _sample("id-b", label="broken", split="test"),
+        _sample("id-c", label="good", split="test"),
     )
 
     dataset = load_cached_latent_dataset(tmp_path, _expected("test"), samples=samples)
@@ -115,6 +135,35 @@ def test_optional_annotations_join_labels_and_masks_by_image_id(
     assert dataset[1].annotation is not None
     assert dataset[1].annotation.label == "broken"
     assert dataset[1].annotation.image_path == Path("id-b.png")
+    assert dataset[1].annotation.category == CATEGORY
+    assert dataset[1].annotation.source_split == "test"
+
+
+def test_annotations_must_match_cache_category_and_source_split(
+    tmp_path: Path,
+) -> None:
+    _write_cache(tmp_path)
+
+    with pytest.raises(ValueError, match="annotation category"):
+        load_cached_latent_dataset(
+            tmp_path,
+            _expected(),
+            samples=(
+                _sample("id-a", category="capsule"),
+                _sample("id-b", category="capsule"),
+                _sample("id-c", category="capsule"),
+            ),
+        )
+    with pytest.raises(ValueError, match="annotation source split"):
+        load_cached_latent_dataset(
+            tmp_path,
+            _expected(),
+            samples=(
+                _sample("id-a", split="test"),
+                _sample("id-b", split="test"),
+                _sample("id-c", split="test"),
+            ),
+        )
 
 
 def test_annotations_must_cover_every_cached_id(tmp_path: Path) -> None:
