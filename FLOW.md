@@ -162,11 +162,15 @@ Caching interfaces (`src/ijepa_ad/caching/`):
   anything with `encode(Tensor[N,3,S,S]) -> Tensor[N,tokens,dim]` (`IJEPAEncoder`
   or a mock). Error: `CacheBuildError` (has `.failed` and the partial `.report`);
   encoder output with the wrong row count, token count, or dim raises it before saving.
+  An `Exception` raised by `encoder.encode` fails that batch only: its samples are in
+  `.failed`, nothing from it is saved, it is not retried, later batches still run, and
+  the error is raised at the end. `KeyboardInterrupt`/`SystemExit` propagate.
 
 - [`cache_schema.py`](src/ijepa_ad/caching/cache_schema.py): `SCHEMA_VERSION = 2`;
   frozen `CacheMetadata` (`to_json()`, `from_json()`, `from_dict()`),
-  `PreprocessingSpec.from_config(PreprocessConfig)`, and `CacheExpectations`
-  (`mismatches(metadata)`). Errors: `CacheMetadataError`,
+  `PreprocessingSpec.from_config(PreprocessConfig)` (validated and normalized to float
+  tuples on every construction path), and `CacheExpectations` (`mismatches(metadata)`;
+  optional `sample_ids` and `num_tokens`). Errors: `CacheMetadataError`,
   `UnsupportedSchemaVersionError`.
 - [`latent_cache.py`](src/ijepa_ad/caching/latent_cache.py):
   `latent_cache_path(root, category, split)`, `build_metadata(latents, *, category,
@@ -225,10 +229,10 @@ split is `train`, `val` or `test`; default root `data/cache/latents` (gitignored
 
 Invalidation: an entry is reusable only if schema version, category, split, encoder
 name, checkpoint hash, patch size, embedding dim, and the full preprocessing spec
-(plus `sample_ids`, when the caller passes them) equal the caller's
+(plus `sample_ids` and `num_tokens`, when the caller passes them) equal the caller's
 `CacheExpectations`. Otherwise `CacheIncompatibleError`; `try_load_latent_cache`
-returns `None` so the caller rebuilds. A checksum, shape, dtype, or metadata failure
-is `CacheCorruptedError` and is never swallowed.
+returns `None` so the caller rebuilds. A checksum, shape, dtype, metadata, or
+non-finite-value failure is `CacheCorruptedError` and is never swallowed.
 
 ### Downstream consumption contract (Person 2)
 
@@ -320,8 +324,11 @@ The CLI performs the same flow per category: `validate_category_splits`, then fo
 `--purpose nominal` `split_nominal_train_val` and caches `train` and `val`; for
 `--purpose test` only the official test records, as a separate `test` entry. Samples
 that cannot be read, and entries that are unusable (e.g. a corrupted final file), are
-recorded in the summary and the run moves on. An exception from the encoder aborts the
-run (finished shards are kept; rerun to resume). Only the mock encoder has been run.
+recorded in the summary and the run moves on; a corrupted final entry is left
+untouched until `--rebuild`. An exception from the encoder fails only its batch (its
+samples are listed as failed, finished shards are kept, rerun to resume). A
+`val_fraction` outside (0, 1) is a configuration error (exit code 2). Only the mock
+encoder has been run.
 
 Every entry point re-validates records before looking at the cache: `build_latent_cache`
 calls `validate_training_records` / `validate_test_records` first, and the CLI calls

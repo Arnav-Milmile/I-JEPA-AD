@@ -19,10 +19,10 @@ from PIL import Image
 
 from ijepa_ad.caching.cache_schema import CacheExpectations, PreprocessingSpec
 from ijepa_ad.caching.cli import (
-    MOCK_CHECKPOINT_SHA256,
     MOCK_ENCODER_NAME,
     CacheRunConfig,
     MockLatentEncoder,
+    mock_checkpoint_sha256,
     run_cache_generation,
 )
 from ijepa_ad.caching.latent_cache import (
@@ -84,7 +84,7 @@ def _expected(split: str, **overrides: object) -> CacheExpectations:
         category=CATEGORY,
         split=split,
         encoder_name=MOCK_ENCODER_NAME,
-        checkpoint_sha256=MOCK_CHECKPOINT_SHA256,
+        checkpoint_sha256=mock_checkpoint_sha256(0),
         patch_size=16,
         embedding_dim=DIM,
         preprocessing=PreprocessingSpec.from_config(PREPROCESS),
