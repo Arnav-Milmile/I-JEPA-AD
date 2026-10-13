@@ -1,5 +1,41 @@
 # REPRODUCIBILITY.md
 
+## Latest repository audit
+
+Audit date: **2026-10-13**, after pulling `origin/main` to repository commit
+`621aa9c`. The working tree contains the documentation reconciliation and the
+coarse-to-fine masking/baseline implementation. With Python 3.14.7 and CPU PyTorch
+2.14.1, the full suite passes: **207 passed** across `tests/unit` and
+`tests/integration`. Ruff, Black, and mypy also pass. CUDA validation remains
+pending; the prior CUDA PyTorch installation was replaced locally with the CPU wheel
+for this verification.
+
+The pinned Meta source checkout and the 704,655,588-byte checkpoint are present
+locally, but neither real checkpoint inference nor CUDA validation has been run.
+
+The real MVTec tree is present and passed `python3 validate_mvtec.py
+data/raw/mvtec_ad` (`15/15` categories). The strict repository validator also
+passed `validate_category_splits` for every category; discovered counts are recorded
+below. Real image decoding and cache generation were not run in this audit.
+
+| Category | Train | Test | Nominal test | Defect test |
+| --- | ---: | ---: | ---: | ---: |
+| bottle | 209 | 83 | 20 | 63 |
+| cable | 224 | 150 | 58 | 92 |
+| capsule | 219 | 132 | 23 | 109 |
+| carpet | 280 | 117 | 28 | 89 |
+| grid | 264 | 78 | 21 | 57 |
+| hazelnut | 391 | 110 | 40 | 70 |
+| leather | 245 | 124 | 32 | 92 |
+| metal_nut | 220 | 115 | 22 | 93 |
+| pill | 267 | 167 | 26 | 141 |
+| screw | 320 | 160 | 41 | 119 |
+| tile | 230 | 117 | 33 | 84 |
+| toothbrush | 60 | 42 | 12 | 30 |
+| transistor | 213 | 100 | 60 | 40 |
+| wood | 247 | 79 | 19 | 60 |
+| zipper | 240 | 151 | 32 | 119 |
+
 ## Official I-JEPA source
 
 - Repository: https://github.com/facebookresearch/ijepa
@@ -106,7 +142,14 @@ run's compatibility check and a different seed never reuses another projection.
 Validation status: the CLI and summary are tested on CPU with synthetic images and the
 mock encoder only. No real-checkpoint, GPU, or real-MVTec cache generation has been run.
 
-## Phase 5 validation: reproducing the CPU test run
+## Historical CPU verification records
+
+The following Phase 5 and Phase 6 sections preserve results from earlier
+environments. They are evidence for the synthetic test coverage, not a claim that
+the current Python environment can reproduce them; the latest audit is at the top of
+this file.
+
+### Phase 5 validation: reproducing the CPU test run
 
 Environment used (Windows, CPU only, no network, no CUDA, no dataset, no checkpoint):
 Python 3.12.10 (CI uses 3.11), torch 2.14.1+cpu, Pillow 12.3.0, ruff 0.8.6, black
@@ -148,7 +191,7 @@ Unverified on external GPU hardware: checkpoint load and hashing, the VRAM spike
 `[N, 196, 1408]` caches, float16 vs float32 storage, real-MVTec behaviour (including
 whether any category has duplicate training images), and CI on Linux/Python 3.11.
 
-## Phase 6 handoff: CPU commands and GPU validation
+### Phase 6 handoff: CPU commands and GPU validation
 
 CPU commands (dev environment from `TRANSFER.md` §5):
 

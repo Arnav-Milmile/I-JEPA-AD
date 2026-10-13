@@ -4,6 +4,14 @@
 **Document Version:** 1.0.0  
 **Target Environment:** Local Edge-Workstation (NVIDIA RTX 4060, 8 GB VRAM, PyTorch 2.x)
 
+**Implementation status (2026-10-13):** The repository has implemented and
+synthetically tested the MVTec data/validation path, deterministic preprocessing,
+nominal train/validation splitting, the frozen ViT-g/16 wrapper contract, versioned
+resumable latent caching, and the cached-latent Transformer predictor/training path.
+Real checkpoint inference, CUDA VRAM numbers, real MVTec cache generation, and real
+predictor training are still pending. Masking, baselines, and evaluation code remain
+planned; see [`TRANSFER.md`](../TRANSFER.md) for the authoritative snapshot.
+
 ---
 
 ## 1. Executive Summary & Product Vision

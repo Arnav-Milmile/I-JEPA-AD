@@ -3,6 +3,13 @@
 **Academic Level:** B.Tech Final Year Capstone Project (Computer Science & Engineering)
 **Target Hardware:** Single NVIDIA RTX 4060 (8 GB VRAM)
 
+**Implementation status (2026-10-13):** The foundation, data/caching pipeline, and
+cached-latent Transformer predictor training path are implemented and covered by
+synthetic CPU tests. The real ViT-g/16 checkpoint has not yet been run, so its CUDA
+memory profile, real MVTec cache outputs, and real predictor training remain to be
+measured. Benchmark metrics and real end-to-end evaluation remain future phases; see
+[`TRANSFER.md`](../TRANSFER.md).
+
 ---
 
 ## 1. Background and Motivation

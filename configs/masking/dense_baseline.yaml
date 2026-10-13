@@ -1,1 +1,4 @@
-# Reserved for the dense masking baseline configuration.
+mode: dense
+grid_size: 14
+fine_size: 1
+lambda: 1.0

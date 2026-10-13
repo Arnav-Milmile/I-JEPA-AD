@@ -1,5 +1,5 @@
 # TRANSFER.md
-_Last updated: 2026-10-11 14:40, by Codex, at commit c9b7bd9_
+_Last updated: 2026-10-13, by Codex, at commit 621aa9c_
 
 ## 1. One-paragraph project state
 The repo is on `main` and Person 2's implementation is now complete up to the point
@@ -9,7 +9,8 @@ a predictor dataset, train a lightweight masked-token Transformer predictor on c
 latents, compute cosine or L2 prediction losses, and save a predictor checkpoint. All of
 that is verified on CPU with synthetic cached latents. What remains for later GPU access
 is generating real I-JEPA latent caches from MVTec and running `scripts/train_predictor.py`
-on those caches. Masking/inference, baselines, evaluation metrics, real checkpoint load,
+on those caches. The masking/fusion and four comparison baseline modules are now
+implemented and synthetically testable; evaluation metrics, real checkpoint load,
 real MVTec, and real GPU results are still not done.
 
 ## 2. Phase checklist
@@ -19,15 +20,18 @@ real MVTec, and real GPU results are still not done.
   real checkpoint load, GPU VRAM spike, and real latent cache generation remain open.
 - **Weeks 5-6, Predictor:** DONE for code and CPU synthetic verification. Left for GPU
   time: run training on real pilot-category caches and inspect loss curves/checkpoints.
-- **Weeks 7-8, Baselines:** NOT STARTED.
-- **Weeks 9-10, Adaptive Masking Engine:** NOT STARTED.
+- **Weeks 7-8, Baselines:** DONE for fixed-mask, dense-mask, PatchCore-style, and
+  MAE-reconstruction CPU interfaces; real benchmark execution remains open.
+- **Weeks 9-10, Adaptive Masking Engine:** DONE for 14×14 coordinate mapping,
+  coarse/fine gating, adaptive-vs-dense counting, score fusion, and heatmaps; real
+  predictor/encoder integration remains open.
 - **Weeks 11-12, Benchmarking:** NOT STARTED.
 - **Weeks 13-14, Full Dataset & Ablations:** NOT STARTED.
 - **Weeks 15-16, Paper Assets:** NOT STARTED.
 
 ## 3. What is verified working right now
-- Full CPU suite: `.\.venv\Scripts\python.exe -m pytest tests\unit tests\integration`
-  passed: **165 passed** on Windows, Python 3.13.2.
+ Full CPU suite: `python -m pytest tests/unit tests/integration -q` passed: **207
+  passed** on Python 3.14.7 with CPU PyTorch 2.14.1.
 - Quality gates passed: `ruff check .`, `black --check --workers 1 .`, and
   `mypy src tests`.
 - Person 2 cache dataset tests pass: cache order/shape, id-ordered selection, optional
@@ -39,10 +43,13 @@ real MVTec, and real GPU results are still not done.
 - Existing Person 2 contract test still passes:
   `tests/integration/test_person2_cache_consumer.py` has 13 passing tests over
   synthetic data and the deterministic mock encoder.
-Verified on Windows, Python 3.12.10, torch 2.14.1+cpu, Pillow 12.3.0, ruff 0.8.6, black 25.1.0, mypy 1.14.1, in `.venv`, by running the commands in §5 (all CPU, no network, no CUDA):
+Verified locally on Python 3.14.7, torch 2.14.1+cpu, with synthetic data and no
+real encoder or CUDA execution:
+- Masking/baseline implementation: focused suite **9 passed**; complete suite **207
+  passed**.
 - PR review fixes (2026-10-12, see `DECISIONS.md`): `pytest tests/unit tests/integration`: **168 passed**; `ruff check .`: all checks passed; `black --check --workers 1 .`: 38 files unchanged; `mypy src tests`: no issues in 35 source files. All CPU, mock encoder, synthetic data; no real encoder, GPU or MVTec involved.
 - Phase 6 re-run: `pytest tests/unit tests/integration`: **150 passed** (137 + 13 new in `tests/integration/test_person2_cache_consumer.py`). `ruff check .`: all checks passed. `black --check --workers 1 .`: 38 files unchanged. `mypy src tests`: no issues in 35 source files. No source file changed in Phase 6.
-- **Consuming the cache (Person 2):** see `FLOW.md`, "Downstream consumption contract". In short: `load_latent_cache(latent_cache_path(root, category, split), CacheExpectations(...))` returns a `LatentCache`; `.latents` is `[N, 196, 1408]`, `.get(image_id)` is one sample `[196, 1408]`, `.select(ids)` a batch, `.metadata.sample_ids` the row order; labels and masks are not cached. The 13 Phase 6 tests exercise this with a stand-in consumer (association against an independent re-encode, train/val/test separation, incompatibility, missing and corrupt entries). Person 2's real code does not exist in the repo, so integration with it is **unverified**; the re-export/helper/dtype-option ideas in `DECISIONS.md` (Phase 6) are proposals awaiting their agreement.
+- **Consuming the cache (Person 2):** see `FLOW.md`, "Downstream consumption contract". In short: `load_latent_cache(latent_cache_path(root, category, split), CacheExpectations(...))` returns a `LatentCache`; `.latents` is `[N, 196, 1408]`, `.get(image_id)` is one sample `[196, 1408]`, `.select(ids)` a batch, `.metadata.sample_ids` the row order; labels and masks are not cached. The 13 Phase 6 tests exercise this with a stand-in consumer, and the implemented `predictor/` dataset, losses, predictor, training loop, and CLI now consume that contract. Real GPU training and real-cache integration remain **unverified**.
 - Earlier verified state (Phase 5): 137 passed, 37 files black-clean, mypy 34 files.
 - Phase 5 (`tests/integration/test_pipeline_end_to_end.py`, 18 tests, plus 1 in `tests/unit/test_mvtec_dataset.py`) exercised these paths: dataset discovery → split → preprocessing → spy mock encoder → cache → reload (every latent compared with the mock encoder run on that sample's own image); a second run encodes nothing; split membership is identical for the same pixels under different filenames/orders; a within-train duplicate and a train/test copy are rejected before any encoding; an existing valid cache does not bypass a later-invalid dataset; global `random`/torch RNG state and source-file bytes/mtimes are unchanged by a full run; `train.pt` copied to `val.pt` or to another category is rejected and rebuilt; a shard copied under another sample's name is recomputed; a failed `os.replace` leaves no final entry and no temp file, and resume encodes only the missing rows; a truncated final entry is reported and left untouched; a checksum-failing tensor is rejected; reordered `sample_ids` in a self-consistent file are not trusted (rebuilt); NaN encoder output is a reported failure with nothing saved from that batch; a changed embedding dim or split seed rebuilds; two runs give bit-identical latents (same batch size) and batch size 1 vs 12 agrees within `atol=1e-4`.
 - Defects found and fixed (regression test first, see `DECISIONS.md`): (1) `MVTecADDataset(split="val")` silently read `test/`; it now raises `ValueError`. (2) Non-finite encoder output escaped the CLI as a raw `CacheMetadataError` traceback; it is now a `CacheBuildError` raised before any shard of the batch is saved.

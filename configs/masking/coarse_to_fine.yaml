@@ -1,1 +1,6 @@
-# Reserved for the coarse-to-fine masking configuration.
+mode: adaptive
+grid_size: 14
+coarse_size: 4
+fine_size: 1
+threshold: 0.5
+lambda: 1.0

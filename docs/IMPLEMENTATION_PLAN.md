@@ -1,6 +1,21 @@
 # I-JEPA-AD Implementation Plan
 ### Engineering plan for a publishable, reproducible research codebase
 
+## Current implementation status (2026-10-11)
+
+The Weeks 1–2 foundation, the data-side portion of Weeks 3–4, and the CPU portion
+of Weeks 5–6 are implemented:
+MVTec discovery/validation, deterministic preprocessing, nominal-only train/validation
+splitting, the frozen ViT-g/16 interface, schema-v2 latent caching, resumable cache
+building, the cache-generation CLI, the cached-latent Transformer predictor,
+losses, training loop, and CLI. These paths have synthetic/mock coverage and static
+checks. The coarse-to-fine masking engine, score fusion, anomaly heatmaps, and four
+baseline interfaces are now implemented with synthetic coverage. The real checkpoint,
+CUDA VRAM spike, real latent-cache generation, production latent dtype, real predictor
+training, and benchmark metrics have not yet been validated. Benchmarking and
+paper-asset phases remain future work. See
+`TRANSFER.md` for the current evidence and exact next step.
+
 This plan translates the PRD/Synopsis into a buildable software project. It is organized so that every phase produces (a) working, tested code and (b) a artifact you can cite in the paper (a table, a plot, a logged metric). The guiding principle: **treat this like a small research library, not a notebook.** Reviewers and your evaluators will both judge reproducibility as much as accuracy.
 
 ---

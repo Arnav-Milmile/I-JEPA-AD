@@ -1,1 +1,4 @@
-# Reserved for the fixed-mask baseline configuration.
+mode: fixed
+grid_size: 14
+coarse_size: 4
+lambda: 1.0

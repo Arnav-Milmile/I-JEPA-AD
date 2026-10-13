@@ -8,9 +8,9 @@ The data path is implemented through latent caching (generation, resume, lookup)
 validated end to end on synthetic data with a mock encoder (Phase 5). Person 2's
 predictor-side work is implemented through CPU-verifiable training code: cached-latent
 dataset/batches, masked-token Transformer predictor, cosine/L2 losses, training loop,
-checkpoint saving, and a training CLI. **Not implemented:** masking, baselines,
-evaluation metrics, and real GPU training; the real encoder has never run on real
-weights or images.
+checkpoint saving, and a training CLI. Masking, score fusion, heatmaps, and comparison
+baselines are implemented with synthetic CPU coverage. Evaluation metrics and real GPU
+training remain open; the real encoder has never run on real weights or images.
 
 ```text
 <root>/<category>/{train,test,ground_truth}
@@ -45,7 +45,7 @@ predictor.training.train_predictor ──> predictor.transformer_predictor
         └────────────── checkpoint.pt <── losses on masked latent tokens
         │
         ▼
-masking / baselines / evaluation   - not implemented
+masking / baselines ──> fused heatmaps; evaluation metrics remain future work
 ```
 
 The `utils` package now provides cross-cutting controls used by every future
@@ -97,7 +97,8 @@ Foundational utility interfaces:
 The predictor package contains the Person 2 path up to training execution. It can read
 cached latents, join optional annotations, train a lightweight Transformer predictor on
 masked latent-token reconstruction, validate on the nominal validation cache, and save a
-checkpoint. Masking, baselines, and evaluation packages are still empty.
+checkpoint. Masking and comparison baselines are implemented with CPU-testable
+tensor interfaces; evaluation metrics and full benchmark orchestration remain open.
 Hydra/OmegaConf is not wired in: `configs/data/mvtec.yaml` records `root`,
 `pilot_categories`, `preprocessing.{image_size, resize, mean, std}`, and
 `nominal_split.{val_fraction, seed, min_train, min_val}`, `latent_cache.root`, but no code loads it yet.
