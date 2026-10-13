@@ -172,3 +172,29 @@ float16/float32 comparisons, and a results table. **It has not been executed.** 
 checkpoint hash, GPU memory, real-image behaviour and real cache numbers stay unknown
 until it is filled in. Suspected but unobserved: `IJEPAEncoder` loads the checkpoint with
 torch's default `weights_only`, which recent torch may reject for this file.
+
+## Person 2 predictor path: CPU verification and later GPU command
+
+Verified locally on Windows/Python 3.13.2 with synthetic cached latents only:
+
+```bash
+./.venv/Scripts/python.exe -m pytest tests/unit/test_predictor_losses.py tests/unit/test_transformer_predictor.py tests/integration/test_predictor_training.py -q  # 8 passed
+./.venv/Scripts/python.exe -m pytest tests/unit tests/integration  # 165 passed
+./.venv/Scripts/ruff.exe check .
+./.venv/Scripts/black.exe --check --workers 1 .
+./.venv/Scripts/mypy.exe src tests
+```
+
+Once real `train.pt` and `val.pt` latent caches exist for a category, train with:
+
+```bash
+./.venv/Scripts/python.exe scripts/train_predictor.py \
+  --cache-root data/cache/latents \
+  --category bottle \
+  --checkpoint-sha256 <real_checkpoint_sha256_from_cache_summary> \
+  --output results/predictor/bottle.pt \
+  --device cuda
+```
+
+Adjust `--batch-size`, `--hidden-dim`, `--depth`, `--num-heads`, `--mask-ratio`, and
+`--loss-type` to run ablations. This command has not been executed on real caches.
