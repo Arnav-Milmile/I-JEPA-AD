@@ -1,16 +1,6 @@
-"""Person 4 — Main Streamlit Application for I-JEPA-AD Visualization.
-
-Implements the user interface for:
-1. Image upload and MVTec category selection.
-2. Model method selection (Adaptive, Dense, Fixed, PatchCore, MAE).
-3. Running inference and displaying original, raw heatmap, overlay, and detected regions.
-4. Displaying key metrics: Anomaly score, masks evaluated, latency, peak VRAM.
-5. Viewing training progress & loss curves.
-6. Viewing category benchmarks and efficiency comparisons.
-"""
+"""Person 4 — Main Streamlit Application for I-JEPA-AD Visualization."""
 from __future__ import annotations
 
-import io
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -26,154 +16,320 @@ from frontend.services.experiment_service import (
 )
 from frontend.components.visualizer import create_heatmap_overlay, draw_detected_regions
 
-# Page configuration
+# ─── Page config (must be first Streamlit call) ───────────────────────────────
 st.set_page_config(
-    page_title="I-JEPA-AD | Anomaly Detection Dashboard",
-    page_icon="🔍",
+    page_title="I-JEPA-AD — Anomaly Detection",
+    page_icon="assets/favicon.png" if Path("frontend/assets/favicon.png").exists() else None,
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# Load configuration
-cfg = load_frontend_config()
+# ─── Custom CSS ───────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Base ── */
+html, body, [data-testid="stAppViewContainer"] {
+    background-color: #0f1117;
+    color: #e2e8f0;
+    font-family: 'Inter', 'Segoe UI', sans-serif;
+}
+
+/* ── Sidebar ── */
+[data-testid="stSidebar"] {
+    background-color: #141820;
+    border-right: 1px solid #1e2534;
+    padding-top: 1.2rem;
+}
+[data-testid="stSidebar"] .stSelectbox label,
+[data-testid="stSidebar"] .stSlider label,
+[data-testid="stSidebar"] .stCheckbox label,
+[data-testid="stSidebar"] .stRadio label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #8896b3;
+}
+
+/* ── Tabs ── */
+[data-testid="stTabs"] button {
+    font-size: 0.82rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #8896b3;
+    padding: 0.5rem 1.2rem;
+    border-bottom: 2px solid transparent;
+}
+[data-testid="stTabs"] button[aria-selected="true"] {
+    color: #7c9cef;
+    border-bottom-color: #7c9cef;
+}
+
+/* ── Cards ── */
+.stat-card {
+    background: #181e2e;
+    border: 1px solid #1e2a42;
+    border-radius: 10px;
+    padding: 1.1rem 1.4rem;
+    text-align: center;
+}
+.stat-label {
+    font-size: 0.70rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #6b7fa3;
+    margin-bottom: 0.35rem;
+}
+.stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    color: #e2e8f0;
+    line-height: 1.1;
+}
+.stat-sub {
+    font-size: 0.70rem;
+    color: #6b7fa3;
+    margin-top: 0.25rem;
+}
+
+/* ── Decision banners ── */
+.banner-defect {
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    border-left: 4px solid #ef4444;
+    border-radius: 8px;
+    padding: 0.8rem 1.2rem;
+    color: #fca5a5;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 0.8rem 0;
+}
+.banner-nominal {
+    background: rgba(34, 197, 94, 0.07);
+    border: 1px solid rgba(34, 197, 94, 0.30);
+    border-left: 4px solid #22c55e;
+    border-radius: 8px;
+    padding: 0.8rem 1.2rem;
+    color: #86efac;
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 0.8rem 0;
+}
+
+/* ── Section headers ── */
+.section-title {
+    font-size: 0.70rem;
+    font-weight: 700;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: #6b7fa3;
+    margin-bottom: 0.6rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid #1e2534;
+}
+
+/* ── Image caption ── */
+.img-caption {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #6b7fa3;
+    text-align: center;
+    margin-top: 0.4rem;
+}
+
+/* ── Status dots ── */
+.dot-ok   { display:inline-block; width:7px; height:7px; border-radius:50%; background:#22c55e; margin-right:6px; }
+.dot-warn { display:inline-block; width:7px; height:7px; border-radius:50%; background:#f59e0b; margin-right:6px; }
+.dot-err  { display:inline-block; width:7px; height:7px; border-radius:50%; background:#ef4444; margin-right:6px; }
+.status-row { font-size:0.78rem; color:#8896b3; margin:4px 0; }
+
+/* ── Dataframe ── */
+[data-testid="stDataFrame"] { border: 1px solid #1e2534; border-radius: 8px; }
+
+/* ── Button ── */
+[data-testid="stButton"] > button {
+    background: #2d4db3;
+    color: #fff;
+    border: none;
+    border-radius: 7px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    padding: 0.55rem 1.4rem;
+    width: 100%;
+    transition: background 0.15s;
+}
+[data-testid="stButton"] > button:hover { background: #3860d9; }
+
+/* ── Hide Streamlit chrome ── */
+#MainMenu, footer, header { visibility: hidden; }
+</style>
+""", unsafe_allow_html=True)
+
+# ─── Config ───────────────────────────────────────────────────────────────────
+cfg        = load_frontend_config()
 categories = cfg.get("categories", [])
-methods = cfg.get("methods", {})
-defaults = cfg.get("defaults", {})
+methods    = cfg.get("methods", {})
+defaults   = cfg.get("defaults", {})
 
-# Header
-st.title("🔍 I-JEPA-AD: Decoder-Free Latent Anomaly Detection")
-st.markdown(
-    "**Person 4 Frontend & Visualization Platform** • *Evaluating Meta's I-JEPA "
-    "frozen latent representations with coarse-to-fine adaptive masking on MVTec AD.*"
-)
+# ─── Sidebar ──────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("""
+    <div style='padding:0 0.4rem 1.2rem; border-bottom:1px solid #1e2534; margin-bottom:1rem;'>
+        <div style='font-size:1.05rem; font-weight:800; color:#e2e8f0; letter-spacing:0.01em;'>
+            I-JEPA-AD
+        </div>
+        <div style='font-size:0.72rem; color:#6b7fa3; margin-top:2px; font-weight:500;'>
+            Decoder-Free Latent Anomaly Detection
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# Sidebar Controls
-st.sidebar.header("⚙️ Experiment Controls")
+    selected_category = st.selectbox(
+        "Category",
+        options=categories,
+        index=categories.index(defaults.get("category", "bottle"))
+              if defaults.get("category") in categories else 0,
+    )
 
-selected_category = st.sidebar.selectbox(
-    "MVTec AD Category",
-    options=categories,
-    index=categories.index(defaults.get("category", "bottle")) if defaults.get("category") in categories else 0,
-    help="Select the object or texture category for nominal context."
-)
+    method_keys = list(methods.keys())
+    selected_method = st.selectbox(
+        "Detection Method",
+        options=method_keys,
+        format_func=lambda k: methods.get(k, k),
+        index=method_keys.index(defaults.get("method", "adaptive_ijepa"))
+              if defaults.get("method") in method_keys else 0,
+    )
 
-method_keys = list(methods.keys())
-selected_method = st.sidebar.selectbox(
-    "Detection Method",
-    options=method_keys,
-    format_func=lambda k: methods.get(k, k),
-    index=method_keys.index(defaults.get("method", "adaptive_ijepa")) if defaults.get("method") in method_keys else 0,
-    help="Choose between Adaptive Coarse-to-Fine I-JEPA or comparison baselines."
-)
+    st.markdown("<div style='height:0.6rem'></div>", unsafe_allow_html=True)
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎛️ Inspection Parameters")
+    anomaly_threshold = st.slider(
+        "Decision Threshold", 0.10, 0.95,
+        float(defaults.get("anomaly_threshold", 0.50)), 0.02,
+    )
+    overlay_alpha = st.slider(
+        "Overlay Opacity", 0.10, 0.90,
+        float(defaults.get("overlay_alpha", 0.55)), 0.05,
+    )
+    selected_colormap = st.selectbox(
+        "Colormap", ["jet", "inferno", "magma", "viridis"]
+    )
 
-anomaly_threshold = st.sidebar.slider(
-    "Anomaly Decision Threshold",
-    min_value=0.10,
-    max_value=0.95,
-    value=float(defaults.get("anomaly_threshold", 0.50)),
-    step=0.02,
-    help="Samples with score above this threshold are classified as defective."
-)
+    st.markdown("<div style='height:0.4rem'></div>", unsafe_allow_html=True)
 
-overlay_alpha = st.sidebar.slider(
-    "Heatmap Overlay Opacity",
-    min_value=0.10,
-    max_value=0.90,
-    value=float(defaults.get("overlay_alpha", 0.55)),
-    step=0.05,
-    help="Transparency for blending the anomaly heatmap over the original image."
-)
+    force_mock = st.checkbox("Synthetic mock mode", value=True)
 
-selected_colormap = st.sidebar.selectbox(
-    "Heatmap Colormap",
-    options=["jet", "inferno", "magma", "viridis"],
-    index=0,
-    help="Color scheme for localized discrepancy score maps."
-)
+    # Asset status
+    root_dir        = Path(__file__).resolve().parent.parent
+    has_checkpoints = (root_dir / "checkpoints").is_dir() and \
+                      any((root_dir / "checkpoints").glob("*.pt"))
+    has_dataset     = (root_dir / "data").is_dir() and \
+                      any((root_dir / "data").glob("*"))
 
-st.sidebar.markdown("---")
-force_mock = st.sidebar.checkbox(
-    "Use Synthetic Mock Mode",
-    value=True,
-    help="Simulates pipeline output when GPU checkpoints/caches are not loaded."
-)
+    st.markdown("<div style='height:0.8rem'></div>", unsafe_allow_html=True)
+    st.markdown(f"""
+    <div style='border-top:1px solid #1e2534; padding-top:0.9rem;'>
+        <div style='font-size:0.65rem; font-weight:700; letter-spacing:0.08em;
+                    text-transform:uppercase; color:#6b7fa3; margin-bottom:0.5rem;'>
+            System Status
+        </div>
+        <div class='status-row'>
+            <span class='{"dot-ok" if PYTORCH_AVAILABLE else "dot-err"}'></span>
+            PyTorch {"available" if PYTORCH_AVAILABLE else "not found"}
+        </div>
+        <div class='status-row'>
+            <span class='{"dot-ok" if has_checkpoints else "dot-warn"}'></span>
+            Checkpoint {"loaded" if has_checkpoints else "not mounted"}
+        </div>
+        <div class='status-row'>
+            <span class='{"dot-ok" if has_dataset else "dot-warn"}'></span>
+            MVTec dataset {"present" if has_dataset else "not present"}
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# System Status Check in Sidebar
-root_dir = Path(__file__).resolve().parent.parent
-ckpt_dir = root_dir / "checkpoints"
-has_checkpoints = ckpt_dir.is_dir() and any(ckpt_dir.glob("*.pt"))
-data_dir = root_dir / "data"
-has_dataset = data_dir.is_dir() and any(data_dir.glob("*"))
+# ─── Page header ──────────────────────────────────────────────────────────────
+st.markdown("""
+<div style='padding:1.4rem 0 0.2rem;'>
+    <div style='font-size:1.55rem; font-weight:800; color:#e2e8f0; letter-spacing:-0.01em;'>
+        Anomaly Detection Dashboard
+    </div>
+    <div style='font-size:0.82rem; color:#6b7fa3; margin-top:0.3rem; font-weight:400;'>
+        Self-supervised masked latent prediction with coarse-to-fine adaptive evaluation
+        on the MVTec AD benchmark.
+    </div>
+</div>
+<hr style='border:none; border-top:1px solid #1e2534; margin:1rem 0 0;'>
+""", unsafe_allow_html=True)
 
-with st.sidebar.expander("ℹ️ System Health & Assets", expanded=False):
-    st.write(f"**PyTorch Installed:** {'✅ Yes' if PYTORCH_AVAILABLE else '❌ No'}")
-    st.write(f"**I-JEPA Checkpoint:** {'✅ Found' if has_checkpoints else '⚠️ Missing (using mock)'}")
-    st.write(f"**MVTec Dataset:** {'✅ Found' if has_dataset else '⚠️ Missing (using sample upload)'}")
-
-# Main Tabs
-tab_inference, tab_training, tab_benchmarks = st.tabs([
-    "🚀 Run Inference",
-    "📈 Training & Loss Curves",
-    "📊 Category Benchmarks & Baselines",
+# ─── Tabs ─────────────────────────────────────────────────────────────────────
+tab_infer, tab_train, tab_bench = st.tabs([
+    "Inspection",
+    "Training Curves",
+    "Benchmarks",
 ])
 
-# ---------------------------------------------------------
-# Tab 1: Run Inference
-# ---------------------------------------------------------
-with tab_inference:
-    col_input, col_display = st.columns([1, 2], gap="large")
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 1 — Inspection
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_infer:
+    col_left, col_right = st.columns([1, 2], gap="large")
 
-    with col_input:
-        st.subheader("1. Input Image Selection")
-        
+    with col_left:
+        st.markdown("<p class='section-title'>Input</p>", unsafe_allow_html=True)
+
         input_mode = st.radio(
-            "Image Source",
-            options=["Upload Custom Image", "Generate Synthetic Sample"],
-            horizontal=True
+            "Source",
+            options=["Upload image", "Synthetic sample"],
+            horizontal=True,
+            label_visibility="collapsed",
         )
 
         sample_image: Image.Image | None = None
 
-        if input_mode == "Upload Custom Image":
-            uploaded_file = st.file_uploader(
-                "Upload Image (PNG, JPG, JPEG, BMP)",
-                type=["png", "jpg", "jpeg", "bmp"],
-                help="Select an industrial product image to inspect."
+        if input_mode == "Upload image":
+            uploaded = st.file_uploader(
+                "Drop an image here", type=["png", "jpg", "jpeg", "bmp"],
+                label_visibility="collapsed",
             )
-            if uploaded_file is not None:
+            if uploaded:
                 try:
-                    sample_image = Image.open(uploaded_file).convert("RGB")
-                    st.image(sample_image, caption="Uploaded Sample Preview", use_container_width=True)
-                except Exception as e:
-                    st.error(f"Failed to read image: {e}")
+                    sample_image = Image.open(uploaded).convert("RGB")
+                    st.image(sample_image, use_container_width=True)
+                    st.markdown(
+                        "<p class='img-caption'>Uploaded sample</p>",
+                        unsafe_allow_html=True,
+                    )
+                except Exception as exc:
+                    st.error(f"Cannot read image — {exc}")
         else:
-            # Generate representative synthetic sample
-            img_arr = np.zeros((224, 224, 3), dtype=np.uint8) + 160
-            # Draw synthetic object body
+            # Synthetic defective sample
+            arr = np.full((224, 224, 3), 155, dtype=np.uint8)
             yy, xx = np.ogrid[:224, :224]
-            mask_obj = ((xx - 112) ** 2 + (yy - 112) ** 2) < (80 ** 2)
-            img_arr[mask_obj] = [210, 215, 220]
-            # Draw defect artifact
-            defect_mask = ((xx - 110) ** 2 + (yy - 100) ** 2) < (18 ** 2)
-            img_arr[defect_mask] = [80, 50, 45]
-            sample_image = Image.fromarray(img_arr, mode="RGB")
-            st.image(sample_image, caption=f"Synthetic '{selected_category}' Sample (with anomaly)", use_container_width=True)
+            arr[((xx - 112) ** 2 + (yy - 112) ** 2) < 80 ** 2] = [208, 213, 218]
+            arr[((xx - 110) ** 2 + (yy - 100) ** 2) < 18 ** 2] = [78, 48, 42]
+            sample_image = Image.fromarray(arr)
+            st.image(sample_image, use_container_width=True)
+            st.markdown(
+                f"<p class='img-caption'>Synthetic — {selected_category} (defect injected)</p>",
+                unsafe_allow_html=True,
+            )
 
-        run_button = st.button(
-            "🚀 Run Anomaly Detection",
-            type="primary",
+        run_btn = st.button(
+            "Run Detection",
             disabled=(sample_image is None),
-            use_container_width=True
+            use_container_width=True,
         )
 
-    with col_display:
-        st.subheader("2. Inspection Results & Anomaly Heatmaps")
+    with col_right:
+        st.markdown("<p class='section-title'>Results</p>", unsafe_allow_html=True)
 
-        if run_button and sample_image is not None:
-            with st.spinner("Extracting latents and evaluating masked patch discrepancy..."):
+        if run_btn and sample_image is not None:
+            with st.spinner("Evaluating masked patch discrepancy…"):
                 result = run_inference(
                     image=sample_image,
                     method=selected_method,
@@ -182,117 +338,170 @@ with tab_inference:
                     anomaly_threshold=anomaly_threshold,
                 )
 
-            score = float(result["image_score"])
+            score        = float(result["image_score"])
             is_anomalous = score >= anomaly_threshold
-            mask_count = int(result["mask_count"])
-            latency = float(result["latency_ms"])
-            vram = result.get("peak_vram_mb")
+            mask_count   = int(result["mask_count"])
+            latency      = float(result["latency_ms"])
+            vram         = result.get("peak_vram_mb")
 
-            # Metrics Row
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric(
-                label="Predicted Anomaly Score",
-                value=f"{score:.3f}",
-                delta="DEFECTIVE" if is_anomalous else "NOMINAL",
-                delta_color="inverse"
-            )
-            m2.metric(
-                label="Masks Evaluated",
-                value=f"{mask_count}",
-                help="Fewer masks indicate higher inference speed and efficiency."
-            )
-            m3.metric(
-                label="Inference Latency",
-                value=f"{latency:.1f} ms"
-            )
-            m4.metric(
-                label="Peak VRAM",
-                value=f"{vram:.1f} MB" if vram else "N/A"
-            )
+            # ── Metric cards ──
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            for col, label, value, sub in [
+                (mc1, "Anomaly Score",    f"{score:.3f}",
+                 "DEFECTIVE" if is_anomalous else "NOMINAL"),
+                (mc2, "Masks Evaluated",  str(mask_count),  "out of 196 patches"),
+                (mc3, "Latency",          f"{latency:.1f}", "milliseconds"),
+                (mc4, "Peak VRAM",        f"{vram:.0f}" if vram else "—",
+                 "MB" if vram else "not measured"),
+            ]:
+                col.markdown(f"""
+                <div class='stat-card'>
+                    <div class='stat-label'>{label}</div>
+                    <div class='stat-value'>{value}</div>
+                    <div class='stat-sub'>{sub}</div>
+                </div>
+                """, unsafe_allow_html=True)
 
-            # Decision Banner
+            # ── Decision banner ──
             if is_anomalous:
-                st.error(
-                    f"🚨 **ANOMALY DETECTED** — Sample score `{score:.3f}` exceeds threshold `{anomaly_threshold:.2f}`."
+                st.markdown(
+                    f"<div class='banner-defect'>"
+                    f"Anomaly detected &mdash; score {score:.3f} exceeds threshold {anomaly_threshold:.2f}"
+                    f"</div>",
+                    unsafe_allow_html=True,
                 )
             else:
-                st.success(
-                    f"✅ **NOMINAL SAMPLE** — Sample score `{score:.3f}` is within safe tolerance (`{anomaly_threshold:.2f}`)."
+                st.markdown(
+                    f"<div class='banner-nominal'>"
+                    f"Nominal sample &mdash; score {score:.3f} within tolerance ({anomaly_threshold:.2f})"
+                    f"</div>",
+                    unsafe_allow_html=True,
                 )
 
-            # Visualizations: Original, Raw Heatmap, Heatmap Overlay
-            heatmap = result["pixel_heatmap"]
-            overlay = create_heatmap_overlay(
-                sample_image,
-                heatmap,
-                alpha=overlay_alpha,
-                colormap_name=selected_colormap,
-            )
+            # ── Visualizations ──
+            heatmap   = result["pixel_heatmap"]
+            overlay   = create_heatmap_overlay(sample_image, heatmap,
+                                               alpha=overlay_alpha,
+                                               colormap_name=selected_colormap)
             annotated = draw_detected_regions(overlay, result.get("detected_regions", []))
 
-            vis1, vis2, vis3 = st.columns(3)
-            with vis1:
-                st.image(sample_image, caption="Original Image", use_container_width=True)
-            with vis2:
-                st.image(heatmap, caption=f"Raw Heatmap ({selected_colormap})", clamp=True, use_container_width=True)
-            with vis3:
-                st.image(annotated, caption="Anomaly Heatmap Overlay", use_container_width=True)
+            v1, v2, v3 = st.columns(3)
+            for col, img, cap in [
+                (v1, sample_image,  "Original"),
+                (v2, heatmap,       f"Heatmap — {selected_colormap}"),
+                (v3, annotated,     "Overlay + regions"),
+            ]:
+                col.image(img, clamp=True, use_container_width=True)
+                col.markdown(
+                    f"<p class='img-caption'>{cap}</p>", unsafe_allow_html=True
+                )
 
             if result.get("is_mock"):
-                st.caption("ℹ️ *Running in contract-compliant Mock Mode (Person 4 interface).*")
+                st.markdown(
+                    "<p style='font-size:0.70rem; color:#4a5568; margin-top:0.5rem;'>"
+                    "Running in mock mode — real checkpoint not mounted.</p>",
+                    unsafe_allow_html=True,
+                )
 
-        elif not run_button:
-            st.info("👈 Upload an image and click **'Run Anomaly Detection'** to view the results.")
+        else:
+            st.markdown("""
+            <div style='display:flex; align-items:center; justify-content:center;
+                        height:300px; border:1px dashed #1e2534; border-radius:10px;
+                        color:#3a4a6b; font-size:0.82rem; font-weight:500;'>
+                Select an image and click Run Detection
+            </div>
+            """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# Tab 2: Training & Loss Curves
-# ---------------------------------------------------------
-with tab_training:
-    st.subheader(f"📈 Predictor Training Curves ({selected_category.capitalize()})")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 2 — Training Curves
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_train:
     st.markdown(
-        "Person 2's masked-token Transformer Predictor minimizes latent discrepancy on nominal patches using Cosine and $L_2$ losses."
+        f"<p class='section-title'>Predictor loss — {selected_category}</p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='font-size:0.82rem; color:#6b7fa3; margin-bottom:1.2rem;'>"
+        "Masked-token Transformer minimises latent prediction discrepancy on nominal "
+        "patches. Encoder weights remain frozen throughout training.</p>",
+        unsafe_allow_html=True,
     )
 
-    df_history = load_training_history(category=selected_category, epochs=50)
+    df_hist = load_training_history(category=selected_category, epochs=50)
 
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        st.markdown("**Cosine Prediction Loss:**")
-        st.line_chart(
-            df_history.set_index("Epoch")[["Train Cosine Loss", "Val Cosine Loss"]],
-            color=["#1f77b4", "#ff7f0e"]
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(
+            "<p class='section-title'>Cosine discrepancy loss</p>",
+            unsafe_allow_html=True,
         )
-    with col_t2:
-        st.markdown("**$L_2$ Norm Prediction Loss:**")
         st.line_chart(
-            df_history.set_index("Epoch")[["Train L2 Loss", "Val L2 Loss"]],
-            color=["#2ca02c", "#d62728"]
+            df_hist.set_index("Epoch")[["Train Cosine Loss", "Val Cosine Loss"]],
+            color=["#7c9cef", "#ef4444"],
+        )
+    with c2:
+        st.markdown(
+            "<p class='section-title'>L₂ norm loss</p>",
+            unsafe_allow_html=True,
+        )
+        st.line_chart(
+            df_hist.set_index("Epoch")[["Train L2 Loss", "Val L2 Loss"]],
+            color=["#34d399", "#f59e0b"],
         )
 
-    st.success(
-        "💡 **Training Invariant:** Predictor is trained strictly on nominal latents without defect leakage. "
-        "Encoder parameters remain strictly frozen (`requires_grad == False`)."
-    )
+    st.markdown("""
+    <div style='background:#141820; border:1px solid #1e2534; border-radius:8px;
+                padding:0.9rem 1.2rem; font-size:0.80rem; color:#8896b3; margin-top:0.6rem;'>
+        <strong style='color:#e2e8f0;'>Training invariant —</strong>
+        Predictor trained exclusively on nominal latents. No defect labels seen during
+        training. Encoder parameters verified frozen (<code>requires_grad == False</code>
+        asserted in test suite).
+    </div>
+    """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# Tab 3: Category Benchmarks & Baselines
-# ---------------------------------------------------------
-with tab_benchmarks:
-    st.subheader("📊 Comparative Benchmarks & Masking Efficiency")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 3 — Benchmarks
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_bench:
     st.markdown(
-        "Evaluating the efficiency advantage of **Adaptive Coarse-to-Fine Masking** against baseline architectures on MVTec AD."
+        "<p class='section-title'>Method comparison — MVTec AD</p>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        "<p style='font-size:0.82rem; color:#6b7fa3; margin-bottom:1rem;'>"
+        "Comparing Adaptive Coarse-to-Fine I-JEPA against Dense-mask, Fixed-mask, "
+        "PatchCore, and MAE-reconstruction baselines.</p>",
+        unsafe_allow_html=True,
     )
 
     bench_df = load_benchmark_summary()
     st.dataframe(bench_df, use_container_width=True, hide_index=True)
 
-    st.markdown("### 🏆 Key Efficiency Findings")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Adaptive Mask Reduction", "92.9%", delta="vs Dense Masking")
-    c2.metric("Mean Image AUROC", "98.4%", delta="+6.9% vs Fixed")
-    c3.metric("Latency Advantage", "5.1x Faster", delta="vs Dense (42.5ms vs 218.4ms)")
+    st.markdown("<div style='height:1rem'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<p class='section-title'>Efficiency highlights</p>",
+        unsafe_allow_html=True,
+    )
+    h1, h2, h3 = st.columns(3)
+    for col, label, value, sub in [
+        (h1, "Mask reduction",  "92.9 %",  "Adaptive vs Dense"),
+        (h2, "Image AUROC",     "98.4 %",  "Adaptive I-JEPA"),
+        (h3, "Latency gain",    "5.1×",    "42.5 ms vs 218.4 ms"),
+    ]:
+        col.markdown(f"""
+        <div class='stat-card'>
+            <div class='stat-label'>{label}</div>
+            <div class='stat-value'>{value}</div>
+            <div class='stat-sub'>{sub}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.subheader("📌 Category-wise AUROC Breakdown (All 15 MVTec Objects & Textures)")
+    st.markdown("<div style='height:1.2rem'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<p class='section-title'>Per-category AUROC — all 15 MVTec classes</p>",
+        unsafe_allow_html=True,
+    )
     cat_df = load_category_auroc_breakdown()
     st.dataframe(cat_df, use_container_width=True, hide_index=True)
