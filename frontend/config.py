@@ -1,4 +1,5 @@
 """Frontend configuration loader conforming to project guidelines."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,9 +7,21 @@ from typing import Any
 
 # Default constants adhering to PDF specifications
 DEFAULT_CATEGORIES = [
-    "bottle", "cable", "capsule", "carpet", "grid",
-    "hazelnut", "leather", "metal_nut", "pill", "screw",
-    "tile", "toothbrush", "transistor", "wood", "zipper",
+    "bottle",
+    "cable",
+    "capsule",
+    "carpet",
+    "grid",
+    "hazelnut",
+    "leather",
+    "metal_nut",
+    "pill",
+    "screw",
+    "tile",
+    "toothbrush",
+    "transistor",
+    "wood",
+    "zipper",
 ]
 
 DEFAULT_METHODS = {
@@ -34,8 +47,9 @@ def load_frontend_config(config_path: Path | None = None) -> dict[str, Any]:
 
     if config_path.is_file():
         try:
-            import yaml  # type: ignore[import-untyped]
-            with open(config_path, "r", encoding="utf-8") as f:
+            import yaml
+
+            with open(config_path, encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 if isinstance(data, dict):
                     return data

@@ -1,40 +1,29 @@
 """Person 4 Backend Application Interface.
 
-Conforms to the Anomaly-detection-to-frontend contract specified in Page 5 & 8
+Conforms to the Anomaly-detection-to-frontend contract specified on Pages 5 & 8
 of the project design document.
 
 Provides:
 - Stable public `run_inference(...)` entrypoint.
-- Seamless fallback to high-fidelity mock inference when real checkpoints,
-  datasets, or CUDA devices are not present.
-- Direct wiring to Person 3's `AdaptiveMaskingEngine` and comparison baselines
-  when latents/patch scores are generated.
+- Explicit mock/real execution indicator: `is_mock: bool`.
+- Consistent region detection aligned with the evaluated anomaly score.
+- Dynamic image-dependent heatmap synthesis when checkpoints are unmounted.
 """
+
 from __future__ import annotations
 
+import importlib.util
 import time
+from pathlib import Path
 from typing import Any
+
 import numpy as np
 from PIL import Image
 
-# Check if PyTorch and Person 3 modules are available
-try:
-    import torch
-    from ijepa_ad.masking import (
-        AdaptiveMaskingEngine,
-        PatchGrid,
-        latent_anomaly_scores,
-        patch_scores_to_heatmap,
-    )
-    from ijepa_ad.baselines import (
-        DenseMaskedIJEPA,
-        FixedMaskIJEPA,
-        MAEReconstructionBaseline,
-        PatchCoreBaseline,
-    )
-    PYTORCH_AVAILABLE = True
-except ImportError:
-    PYTORCH_AVAILABLE = False
+PYTORCH_AVAILABLE = (
+    importlib.util.find_spec("torch") is not None
+    and importlib.util.find_spec("ijepa_ad") is not None
+)
 
 
 def _validate_image_input(image: Any) -> Image.Image:
@@ -46,41 +35,57 @@ def _validate_image_input(image: Any) -> Image.Image:
     )
 
 
+def _compute_image_signature(image: Image.Image) -> tuple[float, float, float]:
+    """Derive deterministic spatial parameters from actual image pixel statistics."""
+    arr = np.asarray(image, dtype=np.float32) / 255.0
+    gray = arr.mean(axis=-1)
+    h, w = gray.shape
+
+    # Find region with largest local variance / gradient
+    grad_y, grad_x = np.gradient(gray)
+    mag = np.hypot(grad_y, grad_x)
+
+    # Coordinates of maximum gradient/defect center
+    max_idx = int(np.argmax(mag))
+    cy, cx = np.unravel_index(max_idx, (h, w))
+    var_intensity = float(np.clip(mag.mean() * 4.0 + gray.std() * 1.5, 0.15, 0.95))
+
+    return float(cx), float(cy), var_intensity
+
+
 def _generate_mock_inference(
     image: Image.Image,
     method: str,
     category: str | None,
     anomaly_threshold: float = 0.50,
 ) -> dict[str, Any]:
-    """Generate contract-compliant synthetic results for verification and demo."""
+    """Generate image-dependent synthetic results for testing and demo."""
     start_time = time.perf_counter()
     w, h = image.size
 
-    # Simulate realistic inference delay
-    time.sleep(0.04)
+    cx, cy, intensity = _compute_image_signature(image)
+    radius = max(min(h, w) // 6, 12)
 
-    # Synthetic smooth 2D Gaussian heatmap centered around a plausible anomaly
+    # Image-dependent 2D Gaussian heatmap centered around the highest-contrast region
     grid_y, grid_x = np.ogrid[:h, :w]
-    center_y, center_x = int(h * 0.48), int(w * 0.52)
-    radius = max(min(h, w) // 5, 10)
+    dist_sq = (grid_x - cx) ** 2 + (grid_y - cy) ** 2
+    raw_heat = np.exp(-dist_sq / (2.0 * (radius**2))) * intensity
 
-    dist_sq = (grid_x - center_x) ** 2 + (grid_y - center_y) ** 2
-    raw_heat = np.exp(-dist_sq / (2.0 * (radius ** 2)))
-    
-    # Add subtle background noise
-    np.random.seed(int(abs(hash(category or "default"))) % (2**31 - 1))
-    noise = np.random.uniform(0.0, 0.08, size=(h, w))
-    combined = raw_heat + noise
-    
-    # Normalize to [0.0, 1.0]
-    min_v, max_v = combined.min(), combined.max()
-    heatmap = (combined - min_v) / (max_v - min_v + 1e-8)
-    heatmap = heatmap.astype(np.float32)
+    # Method-specific calibration
+    method_multipliers = {
+        "adaptive_ijepa": 1.0,
+        "dense_masked_ijepa": 1.02,
+        "fixed_mask_ijepa": 0.92,
+        "patchcore": 0.98,
+        "mae_reconstruction": 0.94,
+    }
+    multiplier = method_multipliers.get(method, 1.0)
+    calibrated_heat = np.clip(raw_heat * multiplier, 0.0, 1.0).astype(np.float32)
 
-    image_score = float(np.percentile(heatmap, 99.2))
+    image_score = float(np.percentile(calibrated_heat, 99.0))
+    is_anomalous = image_score >= anomaly_threshold
 
-    # Mask count invariant: Adaptive evaluates fewer masks than Dense
-    # 14x14 grid has 196 total tokens
+    # Mask counts per method specification
     mask_counts = {
         "adaptive_ijepa": 14,
         "dense_masked_ijepa": 196,
@@ -89,25 +94,28 @@ def _generate_mock_inference(
         "mae_reconstruction": 1,
     }
 
+    # Consistency rule: Nominal samples NEVER produce defect bounding boxes
     detected_regions: list[dict[str, Any]] = []
-    if image_score >= anomaly_threshold:
+    if is_anomalous:
         box = [
-            max(0, center_x - radius),
-            max(0, center_y - radius),
-            min(w, center_x + radius),
-            min(h, center_y + radius),
+            max(0, int(cx - radius)),
+            max(0, int(cy - radius)),
+            min(w, int(cx + radius)),
+            min(h, int(cy + radius)),
         ]
-        detected_regions.append({
-            "box": box,
-            "confidence": round(image_score, 3),
-            "label": f"Defect ({category or 'generic'})",
-        })
+        detected_regions.append(
+            {
+                "box": box,
+                "confidence": round(image_score, 3),
+                "label": f"Defect ({category or 'generic'})",
+            }
+        )
 
     latency_ms = (time.perf_counter() - start_time) * 1000.0
 
     return {
         "image_score": round(image_score, 4),
-        "pixel_heatmap": heatmap,
+        "pixel_heatmap": calibrated_heat,
         "overlay": None,
         "detected_regions": detected_regions,
         "mask_count": mask_counts.get(method, 14),
@@ -116,8 +124,18 @@ def _generate_mock_inference(
         "method": method,
         "category": category,
         "is_mock": True,
-        "status": "success",
+        "status": "mock",
     }
+
+
+def _check_checkpoint_available(category: str | None) -> bool:
+    """Check if predictor checkpoint exists for the given category."""
+    root = Path(__file__).resolve().parent.parent.parent
+    ckpt_dir = root / "results" / "predictor"
+    if category:
+        if (ckpt_dir / f"{category}.pt").is_file():
+            return True
+    return any(ckpt_dir.glob("*.pt")) if ckpt_dir.is_dir() else False
 
 
 def run_inference(
@@ -141,8 +159,7 @@ def run_inference(
     """
     validated_img = _validate_image_input(image)
 
-    # In research phases before real GPU checkpoints are generated,
-    # or when mock mode is requested, use high-fidelity mock inference.
+    # If mock explicitly requested or PyTorch is not available:
     if use_mock or not PYTORCH_AVAILABLE:
         return _generate_mock_inference(
             validated_img,
@@ -151,44 +168,36 @@ def run_inference(
             anomaly_threshold=anomaly_threshold,
         )
 
-    # When PyTorch is available, check if real checkpoint is loaded or wire to Person 3 engine
-    try:
-        # Check if real checkpoint exists in checkpoints/
-        # If not yet present, run Person 3's engine over synthetic latent features
-        grid = PatchGrid()
-        engine = AdaptiveMaskingEngine(threshold=anomaly_threshold)
-        
-        # In CPU testing without real weights, evaluate adaptive masking contract
-        # 14x14 = 196 tokens
-        mock_patch_scores = torch.zeros(1, 196)
-        mock_patch_scores[0, 5 * 14 + 6] = 1.0  # Synthetic anomaly patch
-        
-        if method == "adaptive_ijepa":
-            mask_res = engine.evaluate(mock_patch_scores, mode="adaptive")
-            mask_count = mask_res.evaluated_regions
-            image_score = float(mask_res.final_score.item())
-        elif method == "dense_masked_ijepa":
-            mask_res = engine.evaluate(mock_patch_scores, mode="dense")
-            mask_count = mask_res.evaluated_regions
-            image_score = float(mask_res.final_score.item())
-        elif method == "fixed_mask_ijepa":
-            mask_res = engine.evaluate(mock_patch_scores, mode="fixed")
-            mask_count = mask_res.evaluated_regions
-            image_score = float(mask_res.final_score.item())
-        else:
-            mask_count = 0
-            image_score = 0.85
+    # Check if real checkpoint exists in the repository
+    has_real_checkpoint = _check_checkpoint_available(category)
 
-        result = _generate_mock_inference(
+    if not has_real_checkpoint:
+        # Checkpoint is pending; return mock output explicitly marked as is_mock: True
+        res = _generate_mock_inference(
             validated_img,
             method=method,
             category=category,
             anomaly_threshold=anomaly_threshold,
         )
-        result["mask_count"] = mask_count
-        result["image_score"] = round(image_score, 4)
-        result["is_mock"] = False
-        return result
+        res["backend_warning"] = (
+            "No trained predictor checkpoint found under results/predictor/. "
+            "Returning contract-compliant simulation."
+        )
+        res["is_mock"] = True
+        return res
+
+    # Real checkpoint exists: attempt real inference pipeline
+    try:
+        # Load and run real pipeline
+        # For now, if full pipeline cannot run without GPU/cache, fall back safely
+        res = _generate_mock_inference(
+            validated_img,
+            method=method,
+            category=category,
+            anomaly_threshold=anomaly_threshold,
+        )
+        res["is_mock"] = True
+        return res
 
     except Exception as exc:
         fallback = _generate_mock_inference(

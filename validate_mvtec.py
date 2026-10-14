@@ -2,6 +2,7 @@
 """Sanity-check a downloaded MVTec AD tree before it's wired into the project.
 Usage: python validate_mvtec.py /path/to/data/raw/mvtec_ad
 """
+
 import sys
 from pathlib import Path
 

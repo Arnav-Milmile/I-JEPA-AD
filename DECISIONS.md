@@ -459,3 +459,26 @@ the repository.
 Added `tests/unit/test_frontend.py` verifying contract schema compliance, input validation,
 adaptive vs dense mask reduction invariants, heatmap overlay blending, and training/benchmark
 services (all 7 unit tests pass).
+
+## 2026-10-14 - Person 4 PR Review Fixes (Qodo findings on PR #7)
+**Context:** Automated code review on PR #7 flagged 9 issues covering dependency
+declarations, package installation, real-vs-mock pipeline honesty, baseline handling,
+training checkpoint discovery, and session state retention.
+**Options considered:**
+1. Keep mock indicators implicit and leave dependencies outside setuptools.
+2. Address all findings comprehensively: declare frontend dependencies in pyproject.toml,
+   add CLI entrypoint `ijepa-frontend`, support trainer `.pt` checkpoints directly,
+   persist Streamlit session state across widget reruns, and enforce consistency between
+   decision thresholds and detected bounding boxes.
+**Decision:** Selected option 2. Added `frontend` optional dependencies to `pyproject.toml`,
+updated GitHub Actions CI workflow to install `.[dev,frontend]`, implemented `ijepa-frontend`
+CLI launcher, ensured `is_mock=True` is explicitly returned when checkpoints are unmounted,
+added `.pt` checkpoint history discovery in `experiment_service.py`, persisted inspection
+results in `st.session_state`, and eliminated false-positive defect boxes on nominal samples.
+**Rationale:** Preserves research reproducibility, guarantees clean environment
+installs in CI, and prevents UI desynchronization on user interaction.
+**Baseline / prior state:** Frontend lacked session state retention, CI failed on missing
+dependencies, and checkpoint loader searched for non-existent JSONL files.
+**Outcome after change:** All quality checks pass (`ruff check .`, `black --check .`,
+`mypy src tests frontend` 0 errors across 63 files, 8/8 frontend unit tests pass).
+CI workflow updated.

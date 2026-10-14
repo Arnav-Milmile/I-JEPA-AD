@@ -1,15 +1,16 @@
 """Visualization component for anomaly heatmaps, overlays, and detected regions."""
+
 from __future__ import annotations
 
 from typing import Any
+
 import numpy as np
 from PIL import Image, ImageDraw
-import matplotlib.cm as cm
 
 
 def create_heatmap_overlay(
     image: Image.Image,
-    heatmap: np.ndarray,
+    heatmap: np.ndarray[Any, Any],
     alpha: float = 0.55,
     colormap_name: str = "jet",
 ) -> Image.Image:
@@ -37,11 +38,14 @@ def create_heatmap_overlay(
     # Resize heatmap to match original image dimensions if needed
     if heat_norm.shape != (orig_h, orig_w):
         heat_pil = Image.fromarray((heat_norm * 255.0).astype(np.uint8), mode="L")
-        heat_resized = heat_pil.resize((orig_w, orig_h), resample=Image.Resampling.BILINEAR)
+        heat_resized = heat_pil.resize(
+            (orig_w, orig_h), resample=Image.Resampling.BILINEAR
+        )
         heat_norm = np.array(heat_resized, dtype=np.float32) / 255.0
 
     # Colorize using matplotlib colormaps (supports matplotlib >= 3.8)
     import matplotlib as mpl
+
     try:
         cmap = mpl.colormaps[colormap_name]
     except Exception:

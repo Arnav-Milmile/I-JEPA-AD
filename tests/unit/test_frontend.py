@@ -6,21 +6,25 @@ Verifies:
 - Mask count invariant: Adaptive evaluates fewer masks than Dense.
 - Heatmap and overlay visualizer logic.
 - Training and benchmark data loader services.
+- Region detection consistency between nominal and defective samples.
 """
+
 from __future__ import annotations
 
 import numpy as np
 import pytest
-from PIL import Image
-
-from frontend.config import load_frontend_config, DEFAULT_CATEGORIES, DEFAULT_METHODS
+from frontend.components.visualizer import (
+    create_heatmap_overlay,
+    draw_detected_regions,
+)
+from frontend.config import load_frontend_config
 from frontend.services.backend_interface import run_inference
 from frontend.services.experiment_service import (
     load_benchmark_summary,
     load_category_auroc_breakdown,
     load_training_history,
 )
-from frontend.components.visualizer import create_heatmap_overlay, draw_detected_regions
+from PIL import Image
 
 
 def test_frontend_config_loads_defaults() -> None:
@@ -37,9 +41,11 @@ def test_frontend_config_loads_defaults() -> None:
 
 
 def test_backend_contract_schema() -> None:
-    """Verify run_inference satisfies the exact schema on Page 8 of the design document."""
+    """Verify run_inference satisfies the schema on Page 8 of the design spec."""
     img = Image.new("RGB", (224, 224), color=(128, 128, 128))
-    res = run_inference(image=img, method="adaptive_ijepa", category="bottle", use_mock=True)
+    res = run_inference(
+        image=img, method="adaptive_ijepa", category="bottle", use_mock=True
+    )
 
     # Required contract keys
     assert "image_score" in res
@@ -72,15 +78,29 @@ def test_invalid_image_input_rejected_gracefully() -> None:
 
 
 def test_adaptive_evaluates_fewer_masks_than_dense() -> None:
-    """Verify the core project efficiency invariant: Adaptive evaluates fewer regions than Dense."""
+    """Verify the core invariant: Adaptive evaluates fewer regions than Dense."""
     img = Image.new("RGB", (224, 224))
     res_adaptive = run_inference(image=img, method="adaptive_ijepa", use_mock=True)
     res_dense = run_inference(image=img, method="dense_masked_ijepa", use_mock=True)
 
     assert res_adaptive["mask_count"] < res_dense["mask_count"]
-    # Dense evaluates all 196 tokens
     assert res_dense["mask_count"] == 196
     assert res_adaptive["mask_count"] <= 20
+
+
+def test_nominal_samples_produce_no_detected_regions() -> None:
+    """Verify consistency: when image score is below threshold, no boxes are drawn."""
+    img = Image.new("RGB", (224, 224), color=(120, 120, 120))
+    # Threshold 0.99 ensures the sample is nominal
+    res = run_inference(
+        image=img,
+        method="adaptive_ijepa",
+        category="bottle",
+        use_mock=True,
+        anomaly_threshold=0.99,
+    )
+    assert res["image_score"] < 0.99
+    assert res["detected_regions"] == []
 
 
 def test_heatmap_overlay_generation() -> None:
@@ -105,16 +125,19 @@ def test_draw_detected_regions() -> None:
 
 
 def test_training_and_benchmark_services() -> None:
-    """Verify training curves and benchmark summaries return non-empty DataFrames."""
-    df_train = load_training_history(category="bottle", epochs=30)
+    """Verify training curves and benchmark summaries return valid DataFrames."""
+    df_train, is_synth_train = load_training_history(category="bottle", epochs=30)
     assert len(df_train) == 30
-    assert "Train Cosine Loss" in df_train.columns
-    assert "Val Cosine Loss" in df_train.columns
+    assert "Train Loss" in df_train.columns
+    assert "Val Loss" in df_train.columns
+    assert isinstance(is_synth_train, bool)
 
-    df_bench = load_benchmark_summary()
+    df_bench, is_synth_bench = load_benchmark_summary()
     assert len(df_bench) >= 5
     assert "Image AUROC (%)" in df_bench.columns
+    assert isinstance(is_synth_bench, bool)
 
-    df_cat = load_category_auroc_breakdown()
+    df_cat, is_synth_cat = load_category_auroc_breakdown()
     assert len(df_cat) == 15
     assert "Category" in df_cat.columns
+    assert isinstance(is_synth_cat, bool)
