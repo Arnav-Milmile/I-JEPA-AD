@@ -375,3 +375,47 @@ The official I-JEPA repository has only a training transform (`RandomResizedCrop
 Preprocessing here uses a deterministic full-image resize instead, so no border
 region is cropped away. See `DECISIONS.md`, 2026-10-10 "Deterministic I-JEPA
 preprocessing".
+
+
+## 5. Frontend and Visualization Architecture (Person 4)
+
+Person 4 delivers the user-facing web dashboard and visualization layer (`frontend/`).
+
+```text
+User Image / MVTec Sample
+        │
+        ▼
+frontend.app (Streamlit Dashboard)
+        │
+        ├──> sidebar: Category, Method (Adaptive/Dense/Fixed/PatchCore/MAE), Threshold, Opacity
+        │
+        ▼
+frontend.services.backend_interface.run_inference(...)
+        │
+        ├──> Calls src.ijepa_ad.masking.adaptive_engine / baselines
+        │    (or contract-compliant synthetic mock when checkpoints are unmounted)
+        │
+        ▼
+Returns Result Schema:
+{
+    "image_score": float,
+    "pixel_heatmap": ndarray [H, W],
+    "overlay": PIL.Image | ndarray,
+    "detected_regions": list[dict],
+    "mask_count": int,
+    "latency_ms": float,
+    "peak_vram_mb": float | None,
+    "method": str,
+    "category": str | None,
+}
+        │
+        ▼
+frontend.components.visualizer
+        ├──> create_heatmap_overlay (continuous colormap alpha blending)
+        └──> draw_detected_regions (bounding box localization)
+        │
+        ▼
+frontend.services.experiment_service
+        ├──> load_training_history (Cosine and L2 loss curves)
+        └──> load_benchmark_summary (AUROC, mask reduction, latency comparisons)
+```

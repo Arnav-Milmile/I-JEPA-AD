@@ -1,0 +1,37 @@
+# Person 4 Frontend Configuration
+categories:
+  - bottle
+  - cable
+  - capsule
+  - carpet
+  - grid
+  - hazelnut
+  - leather
+  - metal_nut
+  - pill
+  - screw
+  - tile
+  - toothbrush
+  - transistor
+  - wood
+  - zipper
+
+methods:
+  adaptive_ijepa: "Adaptive I-JEPA (Coarse-to-Fine)"
+  dense_masked_ijepa: "Dense-mask I-JEPA Baseline"
+  fixed_mask_ijepa: "Fixed-mask I-JEPA Baseline"
+  patchcore: "PatchCore Baseline"
+  mae_reconstruction: "MAE Reconstruction Baseline"
+
+defaults:
+  category: "bottle"
+  method: "adaptive_ijepa"
+  anomaly_threshold: 0.50
+  fine_threshold: 0.40
+  lambda_fusion: 1.0
+  colormap: "jet"
+  overlay_alpha: 0.55
+
+display:
+  image_size: [224, 224]
+  grid_size: 14

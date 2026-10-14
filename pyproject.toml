@@ -18,9 +18,19 @@ dev = [
     "pytest==8.3.4",
     "ruff==0.8.6",
 ]
+frontend = [
+    "matplotlib>=3.8,<4",
+    "pandas>=2.0,<3",
+    "pyyaml>=6.0,<7",
+    "streamlit>=1.30,<2",
+]
+
+[project.scripts]
+ijepa-frontend = "frontend.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["ijepa_ad*", "frontend*"]
 
 [tool.black]
 line-length = 88
@@ -29,7 +39,7 @@ target-version = ["py311"]
 [tool.ruff]
 line-length = 88
 target-version = "py311"
-src = ["src", "tests"]
+src = ["src", "tests", "frontend"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -40,10 +50,10 @@ strict = true
 follow_imports = "skip"
 ignore_missing_imports = true
 disallow_subclassing_any = false
-files = ["src", "tests"]
-packages = ["ijepa_ad"]
+files = ["src", "tests", "frontend"]
+packages = ["ijepa_ad", "frontend"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests/unit", "tests/integration"]
 addopts = "-ra"
-pythonpath = ["src"]
+pythonpath = ["src", "."]

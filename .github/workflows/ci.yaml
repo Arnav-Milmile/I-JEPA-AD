@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install project and development tools
-        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev,frontend]"
       - name: Ruff
         run: ruff check .
       - name: Black
