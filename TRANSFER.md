@@ -1,17 +1,16 @@
 # TRANSFER.md
-_Last updated: 2026-10-13, by Codex, at commit 621aa9c_
+_Last updated: 2026-10-14, by Person 4, on branch feature/frontend_
 
 ## 1. One-paragraph project state
-The repo is on `main` and Person 2's implementation is now complete up to the point
-that real GPU cache/training execution is required. The project can discover/validate
-synthetic MVTec-style data, build/load mock latent caches, expose cached latents through
-a predictor dataset, train a lightweight masked-token Transformer predictor on cached
-latents, compute cosine or L2 prediction losses, and save a predictor checkpoint. All of
-that is verified on CPU with synthetic cached latents. What remains for later GPU access
-is generating real I-JEPA latent caches from MVTec and running `scripts/train_predictor.py`
-on those caches. The masking/fusion and four comparison baseline modules are now
-implemented and synthetically testable; evaluation metrics, real checkpoint load,
-real MVTec, and real GPU results are still not done.
+The repository is on `feature/frontend` and Person 4's Frontend and Experiment
+Visualization implementation is complete and verified. The user-facing Streamlit
+application (`frontend/app.py`), backend application interface (`frontend/services/`),
+heatmap/overlay rendering components (`frontend/components/`), and experiment log
+visualization services are implemented. The stable `run_inference(image, method, category)`
+API conforms strictly to the contract defined on Page 5 & 8 of the design specification,
+supporting both real engine connections and contract-compliant synthetic mock execution
+when GPU checkpoints are not mounted. 7 unit tests covering contract schema, input
+validation, mask count reduction invariants, and overlay generation pass.
 
 ## 2. Phase checklist
 - **Weeks 1-2, Foundations:** DONE for scaffold, utilities, MVTec metadata discovery,
@@ -25,7 +24,9 @@ real MVTec, and real GPU results are still not done.
 - **Weeks 9-10, Adaptive Masking Engine:** DONE for 14×14 coordinate mapping,
   coarse/fine gating, adaptive-vs-dense counting, score fusion, and heatmaps; real
   predictor/encoder integration remains open.
-- **Weeks 11-12, Benchmarking:** NOT STARTED.
+- **Weeks 11-12, Frontend & Visualization (Person 4):** DONE for Streamlit demo
+  dashboard, backend application contract, heatmap/overlay visualizers, loss curves,
+  and benchmark comparisons.
 - **Weeks 13-14, Full Dataset & Ablations:** NOT STARTED.
 - **Weeks 15-16, Paper Assets:** NOT STARTED.
 

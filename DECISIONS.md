@@ -431,3 +431,31 @@ that still aborts a run; their assertions are unchanged. Two files use
 **Outcome after change:** 168 tests pass on CPU (150 before). ruff, black and mypy are
 clean. Not verified: real encoder, GPU, real MVTec; a CUDA out-of-memory error is only
 simulated with a `RuntimeError`.
+
+## 2026-10-14 - Implement Person 4 Frontend and Visualization Suite
+**Context:** The four-person division of the project designates Person 4 to build
+the user-facing demo and visualization dashboard. Requirements from the specification
+mandate an interactive interface for MVTec category/image selection, anomaly detection
+method switching (Adaptive, Dense, Fixed, PatchCore, MAE), heatmaps, overlays,
+suspicious region localization, mask counts, latency/VRAM metrics, loss curves, and
+benchmark summaries.
+**Options considered:**
+1. React + FastAPI: High overhead, slower development, multiple runtime dependencies.
+2. Gradio: Simple, but less flexible for multi-tab research dashboards with loss curves
+   and custom overlay parameter controls.
+3. Streamlit: Explicitly recommended by the specification, rapid development, rich native
+   data/image widgets, and supports immediate integration with Python backend modules.
+**Decision:** Selected Streamlit for the frontend application under `frontend/app.py`,
+supported by a modular architecture (`frontend/config.py`, `frontend/services/`,
+`frontend/components/`), adhering to the backend integration contract defined on
+Page 5 & 8 of the design specification.
+**Rationale:** Streamlit allows end-to-end interactivity (image upload, slider-controlled
+alpha blending, colormap selection, and loss curve plotting) while decoupling the UI
+from backend internals via the stable `run_inference(image, method, category)` application
+interface.
+**Baseline / prior state:** No frontend, visualization, or interactive demo existed in
+the repository.
+**Outcome after change:** Complete frontend application implemented and smoke-tested.
+Added `tests/unit/test_frontend.py` verifying contract schema compliance, input validation,
+adaptive vs dense mask reduction invariants, heatmap overlay blending, and training/benchmark
+services (all 7 unit tests pass).
