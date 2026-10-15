@@ -169,9 +169,7 @@ def load_benchmark_summary() -> tuple[pd.DataFrame, bool]:
                     "Cached-latent Latency (ms)": float(
                         np.mean([row["mean_predictor_latency_ms"] for row in measured])
                     ),
-                    "Peak VRAM (MB)": float(
-                        np.max([row["peak_vram_mb"] for row in measured])
-                    ),
+                    "Peak VRAM (MB)": _maximum_available_vram(measured),
                 }
             )
         return pd.DataFrame(records), False
@@ -197,6 +195,60 @@ def load_benchmark_summary() -> tuple[pd.DataFrame, bool]:
         "Inference Latency (ms)": [42.5, 218.4, 31.0, 115.8, 88.2],
     }
     return pd.DataFrame(data), True
+
+
+def _maximum_available_vram(rows: list[dict[str, Any]]) -> float | None:
+    values = [
+        value
+        for row in rows
+        if (value := row.get("peak_vram_mb")) is not None
+        and isinstance(value, int | float)
+        and np.isfinite(value)
+    ]
+    return float(max(values)) if values else None
+
+
+def benchmark_efficiency_highlights(
+    bench_df: pd.DataFrame,
+) -> list[tuple[str, str, str]]:
+    """Summarize adaptive-vs-dense efficiency when both measurements are present."""
+    adaptive_rows = bench_df.loc[bench_df["Method"] == "Adaptive I-JEPA"]
+    dense_rows = bench_df.loc[bench_df["Method"] == "Dense-mask I-JEPA"]
+    if adaptive_rows.empty or dense_rows.empty:
+        row = bench_df.iloc[0] if not bench_df.empty else None
+        image_auroc = "—" if row is None else f"{row['Image AUROC (%)']:.1f} %"
+        image_method = "No measured results" if row is None else str(row["Method"])
+        return [
+            ("Mask reduction", "—", "Requires adaptive and dense results"),
+            ("Image AUROC", image_auroc, image_method),
+            ("Cached latency gain", "—", "Requires adaptive and dense results"),
+        ]
+
+    adaptive = adaptive_rows.iloc[0]
+    dense = dense_rows.iloc[0]
+    adaptive_latency = float(adaptive["Cached-latent Latency (ms)"])
+    latency_gain = (
+        float(dense["Cached-latent Latency (ms)"]) / adaptive_latency
+        if adaptive_latency > 0
+        else float("nan")
+    )
+    return [
+        (
+            "Mask reduction",
+            f"{adaptive['Mask Reduction vs Dense (%)']:.1f} %",
+            "Adaptive vs Dense (pilot)",
+        ),
+        (
+            "Image AUROC",
+            f"{adaptive['Image AUROC (%)']:.1f} %",
+            "Adaptive, macro average",
+        ),
+        (
+            "Cached latency gain",
+            f"{latency_gain:.1f}×" if np.isfinite(latency_gain) else "—",
+            "Adaptive vs Dense",
+        ),
+    ]
 
 
 def load_category_auroc_breakdown() -> tuple[pd.DataFrame, bool]:
