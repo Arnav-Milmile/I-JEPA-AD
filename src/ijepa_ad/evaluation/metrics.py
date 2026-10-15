@@ -7,7 +7,7 @@ from collections.abc import Sequence
 import numpy as np
 from numpy.typing import NDArray
 
-_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz  # type: ignore[attr-defined]
 
 
 def image_auroc(labels: Sequence[int], scores: Sequence[float]) -> float:
@@ -81,12 +81,16 @@ def aupro(
     maximum = max(float(score.max()) for score in score_arrays)
     epsilon = max(float(np.finfo(np.float64).eps), (maximum - minimum) * 1e-9)
     thresholds = np.linspace(maximum + epsilon, minimum - epsilon, num_thresholds)
-    false_positive_rates = np.empty(num_thresholds, dtype=np.float64)
-    region_overlaps = np.empty(num_thresholds, dtype=np.float64)
+    false_positive_rates: NDArray[np.float64] = np.empty(
+        num_thresholds, dtype=np.float64
+    )
+    region_overlaps: NDArray[np.float64] = np.empty(num_thresholds, dtype=np.float64)
 
     ascending_thresholds = thresholds[::-1]
-    false_positive_counts = np.zeros(num_thresholds, dtype=np.int64)
-    region_overlap_sums = np.zeros(num_thresholds, dtype=np.float64)
+    false_positive_counts: NDArray[np.int64] = np.zeros(num_thresholds, dtype=np.int64)
+    region_overlap_sums: NDArray[np.float64] = np.zeros(
+        num_thresholds, dtype=np.float64
+    )
     for score, mask in zip(score_arrays, mask_arrays, strict=True):
         flat_scores = score.reshape(-1)
         flat_mask = mask.reshape(-1)
@@ -158,7 +162,7 @@ def binary_auroc(labels: Sequence[int], scores: Sequence[float]) -> float:
     order = np.argsort(score_array, kind="mergesort")
     sorted_scores = score_array[order]
     ranks = np.empty(score_array.size, dtype=np.float64)
-    boundaries = np.flatnonzero(np.diff(sorted_scores)) + 1
+    boundaries: NDArray[np.intp] = np.flatnonzero(np.diff(sorted_scores)) + 1
     starts = np.concatenate(([0], boundaries))
     stops = np.concatenate((boundaries, [order.size]))
     average_ranks = (starts + 1 + stops) / 2

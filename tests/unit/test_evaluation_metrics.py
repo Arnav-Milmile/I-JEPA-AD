@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from ijepa_ad.evaluation.metrics import (
     aupro,
@@ -34,7 +35,9 @@ def test_image_threshold_uses_only_nominal_validation_scores() -> None:
     assert observed_fpr == pytest.approx(0.25)
 
 
-@pytest.mark.parametrize("masking_threshold", [float("nan"), float("inf"), -0.1])
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "masking_threshold", [float("nan"), float("inf"), -0.1]
+)
 def test_pilot_rejects_invalid_masking_threshold(
     masking_threshold: float,
 ) -> None:
@@ -53,10 +56,12 @@ def test_pilot_rejects_invalid_masking_threshold(
 
 
 def test_pixel_auroc_uses_all_image_pixels() -> None:
-    normal_scores = np.zeros((2, 2), dtype=np.float32)
-    normal_mask = np.zeros((2, 2), dtype=bool)
-    defect_scores = np.array([[0.0, 0.0], [0.0, 1.0]], dtype=np.float32)
-    defect_mask = np.array([[False, False], [False, True]])
+    normal_scores: NDArray[np.float32] = np.zeros((2, 2), dtype=np.float32)
+    normal_mask: NDArray[np.bool_] = np.zeros((2, 2), dtype=bool)
+    defect_scores: NDArray[np.float32] = np.array(
+        [[0.0, 0.0], [0.0, 1.0]], dtype=np.float32
+    )
+    defect_mask: NDArray[np.bool_] = np.array([[False, False], [False, True]])
 
     assert pixel_auroc(
         [normal_scores, defect_scores], [normal_mask, defect_mask]
@@ -64,20 +69,20 @@ def test_pixel_auroc_uses_all_image_pixels() -> None:
 
 
 def test_aupro_is_one_for_perfectly_ranked_defect_region() -> None:
-    scores = np.zeros((4, 4), dtype=np.float32)
+    scores: NDArray[np.float32] = np.zeros((4, 4), dtype=np.float32)
     scores[1:3, 1:3] = 1.0
-    mask = np.zeros((4, 4), dtype=bool)
+    mask: NDArray[np.bool_] = np.zeros((4, 4), dtype=bool)
     mask[1:3, 1:3] = True
 
     assert aupro([scores], [mask], num_thresholds=50) == pytest.approx(1.0)
 
 
 def test_aupro_matches_direct_threshold_scan() -> None:
-    scores = np.array(
+    scores: NDArray[np.float32] = np.array(
         [[0.0, 0.1, 0.7], [0.2, 0.8, 0.4], [0.9, 0.3, 0.6]],
         dtype=np.float32,
     )
-    mask = np.zeros((3, 3), dtype=bool)
+    mask: NDArray[np.bool_] = np.zeros((3, 3), dtype=bool)
     mask[1, 1:3] = True
     mask[0, 0] = True
     components = (np.array([0]), np.array([4, 5]))

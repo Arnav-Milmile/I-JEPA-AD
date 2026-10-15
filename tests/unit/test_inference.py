@@ -73,7 +73,9 @@ def test_inference_rejects_non_finite_latents() -> None:
         scorer.score(latents)
 
 
-@pytest.mark.parametrize("cache_dtype", [torch.float16, torch.bfloat16, torch.float32])
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "cache_dtype", [torch.float16, torch.bfloat16, torch.float32]
+)
 def test_inference_converts_cached_latents_to_predictor_dtype(
     cache_dtype: torch.dtype,
 ) -> None:

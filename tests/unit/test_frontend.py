@@ -30,6 +30,7 @@ from frontend.services.experiment_service import (
     load_category_threshold,
     load_training_history,
 )
+from numpy.typing import NDArray
 from PIL import Image
 
 from ijepa_ad.caching import latent_cache
@@ -125,7 +126,7 @@ def test_mock_inference_remains_available_without_torch(
 
 
 def test_disconnected_high_score_clusters_get_separate_boxes() -> None:
-    heatmap = np.zeros((20, 20), dtype=np.float32)
+    heatmap: NDArray[np.float32] = np.zeros((20, 20), dtype=np.float32)
     heatmap[2:6, 3:7] = 0.9
     heatmap[12:16, 13:17] = 0.8
 
@@ -146,7 +147,7 @@ def test_disconnected_high_score_clusters_get_separate_boxes() -> None:
 
 
 def test_region_detection_does_not_include_background_when_cutoff_is_zero() -> None:
-    heatmap = np.zeros((20, 20), dtype=np.float32)
+    heatmap: NDArray[np.float32] = np.zeros((20, 20), dtype=np.float32)
     heatmap[3, 4] = 0.9
     heatmap[15, 16] = 0.8
 
